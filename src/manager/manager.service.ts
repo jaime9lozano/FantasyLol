@@ -5,6 +5,7 @@ import { Repository } from 'typeorm';
 import { Manager } from './entities/manager.entity';
 import { CreateManagerDto } from './dto/create-manager.dto';
 import { UpdateManagerDto } from './dto/update-manager.dto';
+import { IsNull } from 'typeorm';
 
 @Injectable()
 export class ManagerService {
@@ -28,11 +29,15 @@ export class ManagerService {
   }
 
   findAll(): Promise<Manager[]> {
-    return this.managerRepository.find();
-  }
+  return this.managerRepository.find({
+    where: { eliminated: IsNull() },
+  });
+}
 
   async findOne(id: number): Promise<Manager> {
-    const manager = await this.managerRepository.findOneBy({ id });
+    const manager = await this.managerRepository.findOne({
+    where: { id, eliminated: IsNull() },
+  });
     if (!manager) throw new NotFoundException('Manager not found');
     return manager;
   }
@@ -53,7 +58,19 @@ export class ManagerService {
 
 
   async remove(id: number): Promise<void> {
-    await this.managerRepository.delete(id);
-  }
+  const manager = await this.findOne(id);
+  manager.eliminated = new Date();
+  await this.managerRepository.save(manager);
+}
+
+
+async reactivate(id: number): Promise<Manager> {
+  const manager = await this.managerRepository.findOne({ where: { id } });
+  if (!manager) throw new NotFoundException('Manager not found');
+
+  manager.eliminated = null;
+  return this.managerRepository.save(manager);
+}
+
 }
 

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, HttpCode } from '@nestjs/common';
 import { ManagerService } from './manager.service';
 import { CreateManagerDto } from './dto/create-manager.dto';
 import { UpdateManagerDto } from './dto/update-manager.dto';
@@ -8,6 +8,7 @@ export class ManagerController {
   constructor(private readonly managerService: ManagerService) {}
 
   @Post()
+  @HttpCode(201)
   create(@Body() createManagerDto: CreateManagerDto) {
     return this.managerService.create(createManagerDto);
   }
@@ -28,8 +29,16 @@ export class ManagerController {
   }
 
   @Delete(':id')
+  @HttpCode(204)
   remove(@Param('id') id: string) {
     return this.managerService.remove(+id);
   }
+
+
+  @Patch(':id/reactivate')
+  reactivate(@Param('id') id: string) {
+    return this.managerService.reactivate(+id);
+  }
+
 }
 

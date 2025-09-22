@@ -19,4 +19,8 @@ export class Manager {
 
   @UpdateDateColumn()
   updated_at: Date;
+
+
+  @Column({ type: 'timestamptz', nullable: true })
+  eliminated: Date | null;
 }
