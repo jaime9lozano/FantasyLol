@@ -4,6 +4,8 @@ import { AppService } from './app.service';
 import { ManagerModule } from './manager/manager.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule } from '@nestjs/config';
+import { RegionModule } from './region/region.module';
+import { EquipoModule } from './equipo/equipo.module';
 
 @Module({
   imports: [
@@ -18,6 +20,8 @@ import { ConfigModule } from '@nestjs/config';
       }),
     }),
     ManagerModule,
+    RegionModule,
+    EquipoModule,
   ],
   controllers: [AppController],
   providers: [AppService],
