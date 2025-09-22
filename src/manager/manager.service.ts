@@ -31,6 +31,7 @@ export class ManagerService {
   findAll(): Promise<Manager[]> {
   return this.managerRepository.find({
     where: { eliminated: IsNull() },
+    order: { id: 'ASC' },
   });
 }
 
