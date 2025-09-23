@@ -6,6 +6,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule } from '@nestjs/config';
 import { RegionModule } from './region/region.module';
 import { EquipoModule } from './equipo/equipo.module';
+import { RolModule } from './rol/rol.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { EquipoModule } from './equipo/equipo.module';
     ManagerModule,
     RegionModule,
     EquipoModule,
+    RolModule,
   ],
   controllers: [AppController],
   providers: [AppService],
