@@ -1,26 +1,36 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  UpdateDateColumn,
+  DeleteDateColumn,
+  Index,
+} from 'typeorm';
 
-@Entity()
+@Entity({ name: 'manager' })
+@Index('idx_manager_username', ['username'])
+@Index('idx_manager_email', ['email'])
 export class Manager {
-    @PrimaryGeneratedColumn()
-  id: number;
+  @PrimaryGeneratedColumn('increment', { type: 'bigint' })
+  id: number; // Ojo con BigInt: si crece mucho, valora tiparlo como string
 
-  @Column({ unique: true })
+  @Column({ unique: true, type: 'text' })
   username: string;
 
-  @Column({ unique: true })
+  @Column({ unique: true, type: 'text' })
   email: string;
 
-  @Column()
+  @Column({ name: 'password_hash', type: 'text', select: false })
   password_hash: string;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   created_at: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updated_at: Date;
 
-
-  @Column({ type: 'timestamptz', nullable: true })
+  @DeleteDateColumn({ name: 'eliminated', type: 'timestamptz', nullable: true })
   eliminated: Date | null;
 }
+

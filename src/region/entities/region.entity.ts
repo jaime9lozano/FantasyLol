@@ -1,14 +1,22 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  DeleteDateColumn,
+  Index,
+} from 'typeorm';
 
-@Entity()
+@Entity({ name: 'region' })
+@Index('idx_region_name', ['name'])
 export class Region {
-  @PrimaryGeneratedColumn()
-  id: number;
-
-  @Column({ unique: true })
+  @PrimaryGeneratedColumn('increment', { type: 'bigint' })
+  id: number; 
+  
+  @Column({ unique: true, type: 'text' })
   name: string;
 
-  @Column({ type: 'timestamptz', nullable: true })
+  @DeleteDateColumn({ type: 'timestamptz', nullable: true, name: 'eliminated' })
   eliminated: Date | null;
 }
+
 

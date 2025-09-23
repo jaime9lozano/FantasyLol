@@ -1,12 +1,12 @@
 import { Region } from 'src/region/entities/region.entity';
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDateColumn, UpdateDateColumn, DeleteDateColumn } from 'typeorm';
 
-@Entity()
+@Entity({ name: 'equipo' })
 export class Equipo {
   @PrimaryGeneratedColumn('increment', { type: 'bigint' })
   id: number;
 
-  @Column({ type: 'timestamp with time zone', nullable: true })
+  @DeleteDateColumn({ type: 'timestamptz', nullable: true, name: 'eliminated' })
   eliminated: Date | null;
 
   @Column({ type: 'text' })
