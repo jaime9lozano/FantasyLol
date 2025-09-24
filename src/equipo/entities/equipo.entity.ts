@@ -1,37 +1,43 @@
-import { Region } from 'src/region/entities/region.entity';
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDateColumn, UpdateDateColumn, DeleteDateColumn } from 'typeorm';
+
+import { Entity, PrimaryGeneratedColumn, Column, DeleteDateColumn, ManyToOne, JoinColumn } from 'typeorm';
+import { EsportsLeague } from 'src/esports_league/entities/esports_league.entity';
 
 @Entity({ name: 'equipo' })
 export class Equipo {
-  @PrimaryGeneratedColumn('increment', { type: 'bigint' })
+  @PrimaryGeneratedColumn('increment')
   id: number;
-
-  @DeleteDateColumn({ type: 'timestamptz', nullable: true, name: 'eliminated' })
-  eliminated: Date | null;
 
   @Column({ type: 'text' })
   team_name: string;
 
-  @Column({ type: 'text' })
-  acronym: string;
-
-  @Column({ type: 'text' })
-  logo_url: string;
-
-  @Column({ type: 'text' })
-  location: string;
-
-  @Column({ type: 'date', nullable: true })
-  founded_year: string | null;
+  @Column({ type: 'text', nullable: true })
+  acronym?: string;
 
   @Column({ type: 'text', nullable: true })
-  coach_name: string | null;
+  logo_url?: string;
 
-  @ManyToOne(() => Region)
-  @JoinColumn({ name: 'Region_id' })
-  region: Region;
+  // 👇 Campos nuevos según tu SQL
+  @Column({ type: 'text', nullable: true, unique: true })
+  slug?: string;
+
+  @Column({ type: 'text', nullable: true, unique: true })
+  esports_team_id?: string;
+
+  @Column({ type: 'text', nullable: true })
+  league_id?: string;
+
+  @ManyToOne(() => EsportsLeague, { onDelete: 'CASCADE', nullable: true })
+  @JoinColumn({ name: 'league_id' })
+  league?: EsportsLeague;
+
+  @Column({ type: 'text', nullable: true })
+  location?: string;
 
   @Column({ type: 'bigint' })
   Region_id: number;
+
+  @DeleteDateColumn({ type: 'timestamptz', nullable: true, name: 'eliminated' })
+  eliminated: Date | null;
 }
+
 
