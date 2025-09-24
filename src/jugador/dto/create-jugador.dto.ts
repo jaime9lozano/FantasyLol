@@ -1,20 +1,21 @@
-import { IsString, IsNotEmpty, IsUUID, IsOptional, IsInt, IsNumber } from 'class-validator';
+import { IsOptional, IsString, IsInt, IsUUID, IsNumber, IsBoolean } from 'class-validator';
 
 export class CreateJugadorDto {
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  summoner_id: string;
+  summoner_id?: string;
 
+  @IsOptional()
   @IsUUID()
-  puuid: string;
+  puuid?: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  summoner_name: string;
+  summoner_name?: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  account_id: string;
+  account_id?: string;
 
   @IsOptional()
   @IsString()
@@ -24,17 +25,40 @@ export class CreateJugadorDto {
   @IsInt()
   league_points?: number;
 
-  @IsNumber()
+  @IsInt()
   team_id: number;
 
-  @IsNumber()
+  @IsInt()
   Region_id: number;
 
-  @IsNumber()
+  @IsInt()
   Main_role_id: number;
 
   @IsOptional()
   @IsNumber()
   clausula?: number;
-}
 
+  @IsOptional()
+  @IsString()
+  esports_player_id?: string;
+
+  @IsOptional()
+  @IsString()
+  display_name?: string;
+
+  @IsOptional()
+  @IsString()
+  country?: string;
+
+  @IsOptional()
+  @IsString()
+  photo_url?: string;
+
+  @IsOptional()
+  @IsString()
+  role_esports?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  active?: boolean;
+}

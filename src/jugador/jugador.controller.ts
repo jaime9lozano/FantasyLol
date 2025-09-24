@@ -1,43 +1,55 @@
-import { Controller, Post, Body, HttpCode, HttpStatus, Get, Query } from '@nestjs/common';
+import { Controller, Post, Body, HttpCode, HttpStatus, Get, Query, Delete, Param, ParseIntPipe, Patch } from '@nestjs/common';
 import { JugadorService } from './jugador.service';
-import { CreateFromRiotDto } from './dto/create-from-riot.dto';
+import { CreateJugadorDto } from './dto/create-jugador.dto';
+import { ListJugadorQueryDto } from './dto/list-jugador-query.dto';
+import { UpdateJugadorDto } from './dto/update-jugador.dto';
 
 @Controller('jugador')
 export class JugadorController {
   constructor(private readonly jugadorService: JugadorService) {}
 
-  @Post('from-riot')
+  @Post()
   @HttpCode(HttpStatus.CREATED)
-  createFromRiot(@Body() dto: CreateFromRiotDto) {
-    return this.jugadorService.createFromRiot(
-      dto.summonerName,
-      dto.teamId,
-      dto.regionId,
-      dto.roleId,
-    );
+  create(@Body() dto: CreateJugadorDto) {
+    return this.jugadorService.create(dto);
   }
 
-  
-@Get('test-from-riot')
-async testFromRiot(
-  @Query('summonerName') summonerName: string,
-  @Query('teamId') teamId: number,
-  @Query('regionId') regionId: number,
-  @Query('roleId') roleId: number,
-): Promise<string> {
-  try {
-    const jugador = await this.jugadorService.createFromRiot(
-      summonerName,
-      Number(teamId),
-      Number(regionId),
-      Number(roleId),
-    );
-    return `Jugador creado: ${jugador.summoner_name} (${jugador.tier ?? 'Sin tier'})`;
-  } catch (error) {
-    return `Error: ${error.message}`;
+  @Get()
+  findAll(@Query() query: ListJugadorQueryDto) {
+    return this.jugadorService.findAll(query);
+  }
+
+  @Get('deleted')
+  findDeleted(@Query() query: Omit<ListJugadorQueryDto, 'includeDeleted'>) {
+    return this.jugadorService.findDeleted(query);
+  }
+
+  @Get(':id')
+  findOne(@Param('id', ParseIntPipe) id: number) {
+    return this.jugadorService.findOne(id);
+  }
+
+  @Patch(':id')
+  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateJugadorDto) {
+    return this.jugadorService.update(id, dto);
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.jugadorService.remove(id);
+  }
+
+  @Delete(':id/hard')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  hardDelete(@Param('id', ParseIntPipe) id: number) {
+    return this.jugadorService.hardDelete(id);
+  }
+
+  @Patch(':id/reactivate')
+  reactivate(@Param('id', ParseIntPipe) id: number) {
+    return this.jugadorService.reactivate(id);
   }
 }
 
-
-}
 

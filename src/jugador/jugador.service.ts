@@ -1,74 +1,132 @@
-import {
-  Injectable,
-  BadRequestException,
-  ConflictException,
-} from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull } from 'typeorm';
-import { Jugador } from './entities/jugador.entity';
-import { Equipo } from 'src/equipo/entities/equipo.entity';
-import { Region } from 'src/region/entities/region.entity';
-import { Rol } from 'src/rol/entities/rol.entity';
-import { RiotService } from 'src/riot/riot.service';
+import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository, IsNull } from "typeorm";
+import { CreateJugadorDto } from "./dto/create-jugador.dto";
+import { ListJugadorQueryDto } from "./dto/list-jugador-query.dto";
+import { UpdateJugadorDto } from "./dto/update-jugador.dto";
+import { Jugador } from "./entities/jugador.entity";
 
 @Injectable()
 export class JugadorService {
   constructor(
     @InjectRepository(Jugador)
     private readonly jugadorRepository: Repository<Jugador>,
-    @InjectRepository(Equipo)
-    private readonly equipoRepository: Repository<Equipo>,
-    @InjectRepository(Region)
-    private readonly regionRepository: Repository<Region>,
-    @InjectRepository(Rol)
-    private readonly rolRepository: Repository<Rol>,
-    private readonly riotService: RiotService,
   ) {}
 
-  /** Crear jugador desde Riot API */
-  async createFromRiot(
-    summonerName: string,
-    teamId: number,
-    regionId: number,
-    roleId: number,
-  ): Promise<Jugador> {
-    const equipo = await this.equipoRepository.findOne({ where: { id: teamId } });
-    const region = await this.regionRepository.findOne({ where: { id: regionId } });
-    const rol = await this.rolRepository.findOne({ where: { id: roleId } });
+  async create(dto: CreateJugadorDto): Promise<Jugador> {
+    try {
+      const jugador = this.jugadorRepository.create(dto);
+      return await this.jugadorRepository.save(jugador);
+    } catch (e) {
+      if (e.code === '23505') {
+        throw new ConflictException('Jugador duplicado');
+      }
+      throw e;
+    }
+  }
 
-    if (!equipo || !region || !rol) {
-      throw new BadRequestException('Equipo, región o rol no válidos');
+  async findAll(query: ListJugadorQueryDto) {
+    const {
+      page = 1,
+      limit = 10,
+      search,
+      includeDeleted = 'false',
+      sortBy = 'id',
+      order = 'ASC',
+    } = query;
+
+    const qb = this.jugadorRepository.createQueryBuilder('jugador');
+
+    if (includeDeleted !== 'true') {
+      qb.andWhere('jugador.eliminated IS NULL');
     }
 
-    const summoner = await this.riotService.getSummonerByName(summonerName);
-    const rankedStats = await this.riotService.getRankedStatsBySummonerId(summoner.id);
+    if (search) {
+      qb.andWhere('jugador.display_name ILIKE :s OR jugador.summoner_name ILIKE :s', {
+        s: `%${search}%`,
+      });
+    }
 
-    const soloQ = rankedStats.find((q) => q.queueType === 'RANKED_SOLO_5x5');
+    qb.orderBy(`jugador.${sortBy}`, order);
 
-    // Comprobar duplicados por summoner_id, puuid, account_id, summoner_name
-    const exists = await this.jugadorRepository.findOne({
-      where: [
-        { summoner_id: summoner.id },
-        { puuid: summoner.puuid },
-        { account_id: summoner.accountId },
-        { summoner_name: summoner.name },
-      ],
+    qb.skip((page - 1) * limit).take(limit);
+
+    const [data, total] = await qb.getManyAndCount();
+
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        lastPage: Math.ceil(total / limit),
+        hasNextPage: page < Math.ceil(total / limit),
+        hasPrevPage: page > 1,
+      },
+    };
+  }
+
+  async findOne(id: number): Promise<Jugador> {
+    const jugador = await this.jugadorRepository.findOne({
+      where: { id, eliminated: IsNull() as any },
     });
-    if (exists) throw new ConflictException('El jugador ya existe en la base de datos');
+    if (!jugador) throw new NotFoundException('Jugador no encontrado');
+    return jugador;
+  }
 
-    const jugador = this.jugadorRepository.create({
-      summoner_id: summoner.id,
-      puuid: summoner.puuid,
-      summoner_name: summoner.name,
-      account_id: summoner.accountId,
-      tier: soloQ?.tier || null,
-      league_points: soloQ?.leaguePoints || null,
-      team_id: teamId,
-      Region_id: regionId,
-      Main_role_id: roleId,
-    });
+  async update(id: number, dto: UpdateJugadorDto): Promise<Jugador> {
+    const jugador = await this.findOne(id);
+    Object.assign(jugador, dto);
+    try {
+      return await this.jugadorRepository.save(jugador);
+    } catch (e) {
+      if (e.code === '23505') {
+        throw new ConflictException('Jugador duplicado');
+      }
+      throw e;
+    }
+  }
 
-    return this.jugadorRepository.save(jugador);
+  async remove(id: number): Promise<void> {
+    const result = await this.jugadorRepository.softDelete({ id });
+    if (result.affected === 0) throw new NotFoundException('Jugador no encontrado');
+  }
+
+  async reactivate(id: number): Promise<Jugador> {
+    await this.jugadorRepository.restore({ id });
+    return this.findOne(id);
+  }
+
+  async findDeleted(query: Omit<ListJugadorQueryDto, 'includeDeleted'>) {
+    const { page = 1, limit = 10, search, sortBy = 'id', order = 'ASC' } = query;
+
+    const qb = this.jugadorRepository
+      .createQueryBuilder('jugador')
+      .where('jugador.eliminated IS NOT NULL');
+
+    if (search) {
+      qb.andWhere('jugador.display_name ILIKE :s OR jugador.summoner_name ILIKE :s', {
+        s: `%${search}%`,
+      });
+    }
+
+    qb.orderBy(`jugador.${sortBy}`, order).skip((page - 1) * limit).take(limit);
+
+    const [data, total] = await qb.getManyAndCount();
+
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        pages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  async hardDelete(id: number): Promise<void> {
+    const result = await this.jugadorRepository.delete({ id });
+    if (result.affected === 0) throw new NotFoundException('Jugador no encontrado');
   }
 }
-
