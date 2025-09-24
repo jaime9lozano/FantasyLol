@@ -1,6 +1,5 @@
 import {
   Injectable,
-  NotFoundException,
   BadRequestException,
   ConflictException,
 } from '@nestjs/common';
@@ -11,9 +10,6 @@ import { Equipo } from 'src/equipo/entities/equipo.entity';
 import { Region } from 'src/region/entities/region.entity';
 import { Rol } from 'src/rol/entities/rol.entity';
 import { RiotService } from 'src/riot/riot.service';
-import { CreateJugadorDto } from './dto/create-jugador.dto';
-import { UpdateJugadorDto } from './dto/update-jugador.dto';
-import { CreateFromRiotDto } from './dto/create-from-riot.dto';
 
 @Injectable()
 export class JugadorService {

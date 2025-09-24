@@ -25,7 +25,6 @@ app.enableCors({
   next();
 });
 
-
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
