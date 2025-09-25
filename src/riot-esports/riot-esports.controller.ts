@@ -10,78 +10,127 @@ export class RiotEsportsController {
     private readonly lock: IngestionLockService,
   ) {}
 
-  // // Si quieres protegerlo con un token:
-  // private ensureAdminToken(req: Request) {
-  //   const expected = process.env.ADMIN_SYNC_TOKEN;
-  //   const got = req.headers['x-admin-token'];
-  //   if (expected && got !== expected) throw new UnauthorizedException();
-  // }
+  /** Helper: formatea errores HTTP (Axios) y DB (TypeORM) en JSON legible */
+  private formatError(e: any) {
+    const status = e?.response?.status;
+    const data = e?.response?.data;
+    return {
+      ok: false,
+      error: e?.message || 'Unexpected error',
+      status,
+      body:
+        typeof data === 'object'
+          ? data
+          : typeof data === 'string'
+          ? data.slice(0, 800)
+          : undefined,
+      // info extra por si es error interno (TypeORM, etc.)
+      code: e?.code,
+      detail: e?.detail,
+      constraint: e?.constraint,
+      stack: process.env.NODE_ENV === 'production' ? undefined : e?.stack,
+    };
+  }
 
-  /** Fuerza toda la sincronización (GET) */
+  /** Sanity check: el controller está mapeado */
+  @Get('ping')
+  ping() {
+    return { ok: true, where: 'riot-esports/ping' };
+  }
+
+  /** Diagnóstico rápido de ENV (baseUrl + apiKey + defaults) */
+  @Get('diag')
+  diag() {
+    const anyService = this.esports as any;
+    return {
+      baseUrlDefined: !!anyService.baseUrl,
+      apiKeyDefined: !!anyService.apiKey,
+      DEFAULT_REGION_ID: anyService.DEFAULT_REGION_ID,
+      DEFAULT_ROLE_ID: anyService.DEFAULT_ROLE_ID,
+    };
+  }
+
+  /** Test: llama sólo a la API externa y no toca BD (para aislar errores HTTP) */
+  @Get('sync/test/leagues')
+  async testLeaguesOnly() {
+    try {
+      const leagues = await this.esports.getLeagues();
+      return {
+        ok: true,
+        count: leagues.length,
+        sample: leagues.slice(0, 3).map((l: any) => ({
+          id: l.id,
+          slug: l.slug,
+          name: l.name,
+          region: l.region,
+        })),
+      };
+    } catch (e: any) {
+      return this.formatError(e);
+    }
+  }
+
+  /** Fuerza toda la sincronización (GET y POST) */
   @Get('sync/all')
-  async syncAllGET() {
+  @Post('sync/all')
+  async syncAll() {
     if (this.lock.isRunning()) {
       return { ok: false, message: 'Ya hay una ingesta en curso' };
     }
-    const res = await this.lock.runExclusive(async () => {
-      await this.esports.upsertLeagues();
-      await this.esports.upsertTeamsAndPlayers();
-      // await this.esports.upsertTournaments();
-      // await this.esports.upsertScheduleAndMatches();
-      // await this.esports.upsertGames();
-      // await this.esports.upsertGameStats({ windowHours: 48 });
-      return true;
-    });
-    return { ok: !!res };
+    try {
+      await this.lock.runExclusive(async () => {
+        await this.esports.upsertLeagues();
+        await this.esports.upsertTeamsAndPlayers();
+        // Próximas etapas cuando las tengas:
+        // await this.esports.upsertTournaments();
+        // await this.esports.upsertScheduleAndMatches();
+        // await this.esports.upsertGames();
+        // await this.esports.upsertGameStats({ windowHours: 48 });
+      });
+      return { ok: true };
+    } catch (e: any) {
+      return this.formatError(e);
+    }
   }
 
-  /** Fuerza toda la sincronización (POST) */
-  @Post('sync/all')
-  async syncAllPOST() {
-    return this.syncAllGET();
-  }
-
-  /** Fuerza sincronización parcial vía query param scope */
+  /** Fuerza sincronización parcial vía query param scope (GET y POST) */
   @Get('sync')
-  async syncPartialGET(@Query('scope') scope?: string) {
+  @Post('sync')
+  async syncPartial(@Query('scope') scope?: string) {
     if (!scope) throw new BadRequestException('Falta scope');
     if (this.lock.isRunning()) {
       return { ok: false, message: 'Ya hay una ingesta en curso' };
     }
 
-    const lower = scope.toLowerCase();
-    const res = await this.lock.runExclusive(async () => {
-      switch (lower) {
-        case 'leagues':
-          await this.esports.upsertLeagues();
-          break;
-        case 'teams-players':
-          await this.esports.upsertTeamsAndPlayers();
-          break;
-        // case 'tournaments':
-        //   await this.esports.upsertTournaments();
-        //   break;
-        // case 'schedule':
-        //   await this.esports.upsertScheduleAndMatches();
-        //   break;
-        // case 'games':
-        //   await this.esports.upsertGames();
-        //   break;
-        // case 'stats':
-        //   await this.esports.upsertGameStats({ windowHours: 48 });
-        //   break;
-        default:
-          throw new BadRequestException('scope inválido');
-      }
-      return true;
-    });
-
-    return { ok: !!res, scope: lower };
-  }
-
-  /** POST equivalente al GET parcial */
-  @Post('sync')
-  async syncPartialPOST(@Query('scope') scope?: string) {
-    return this.syncPartialGET(scope);
+    try {
+      const lower = scope.toLowerCase();
+      await this.lock.runExclusive(async () => {
+        switch (lower) {
+          case 'leagues':
+            await this.esports.upsertLeagues();
+            break;
+          case 'teams-players':
+            await this.esports.upsertTeamsAndPlayers();
+            break;
+          // case 'tournaments':
+          //   await this.esports.upsertTournaments();
+          //   break;
+          // case 'schedule':
+          //   await this.esports.upsertScheduleAndMatches();
+          //   break;
+          // case 'games':
+          //   await this.esports.upsertGames();
+          //   break;
+          // case 'stats':
+          //   await this.esports.upsertGameStats({ windowHours: 48 });
+          //   break;
+          default:
+            throw new BadRequestException('scope inválido');
+        }
+      });
+      return { ok: true, scope: lower };
+    } catch (e: any) {
+      return this.formatError(e);
+    }
   }
 }

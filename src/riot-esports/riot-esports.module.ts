@@ -12,7 +12,10 @@ import { RiotEsportsTasks } from './riot-esports.tasks';
 
 @Module({
   imports: [
-    HttpModule,
+HttpModule.register({
+      timeout: 15000,   // 15s
+      maxRedirects: 5,
+    }),
     TypeOrmModule.forFeature([EsportsLeague, Equipo, Jugador, Rol]),
   ],
   controllers: [RiotEsportsController],
