@@ -412,8 +412,12 @@ async upsertTeamsAndPlayers(): Promise<void> {
     const withPlayers = teamsUnique.filter(t => Array.isArray(t.players) && t.players.length > 0);
     this.logger.log(`[RiotEsportsService] Equipos con players en payload: ${withPlayers.length}/${teamsUnique.length}`);
 
-    // === (H) Preparar jugadores (si vienen en payload) ===
+    
+    
+    // (H) Preparar jugadores con FK resuelta
     const playersBatch: QueryDeepPartialEntity<Jugador>[] = [];
+
+    let hadSummonerName = 0, hadFirst = 0, hadLast = 0;
 
     for (const t of teamsUnique) {
       const persisted = byEsportsId.get(t.id);
@@ -424,24 +428,45 @@ async upsertTeamsAndPlayers(): Promise<void> {
 
       for (const p of t.players ?? []) {
         if (!p?.id) continue;
+
         const mainRoleId = await this.mapRoleToId(p.role);
 
+        // Nuevos campos desde getTeams
+        const summonerName = this.toStr(p.summonerName);
+        const firstName    = this.toStr(p.firstName);
+        const lastName     = this.toStr(p.lastName);
+
+        if (summonerName) hadSummonerName++;
+        if (firstName)    hadFirst++;
+        if (lastName)     hadLast++;
+
         playersBatch.push({
-          esports_player_id: String(p.id).trim(),
-          display_name: this.toStr(p.name ?? p.displayName) ?? undefined,
-          role_esports: this.toStr(p.role) ?? undefined,
+          esports_player_id: String(p.id),
+
+          // ⬇️ Si tu entidad es string | null:
+          summoner_name: summonerName ?? null,
+          first_name:    firstName    ?? null,
+          last_name:     lastName     ?? null,
+
+          // ⬇️ Si prefieres no cambiar entidad (string | undefined), usa:
+          // summoner_name: summonerName ?? undefined,
+          // first_name:    firstName    ?? undefined,
+          // last_name:     lastName     ?? undefined,
+
           photo_url: this.toStr(p.image ?? p.photoUrl) ?? undefined,
-          country: this.toStr(p.country) ?? undefined,
+          role_esports: this.toStr(p.role) ?? undefined,
           team_id: persisted.id,
           Region_id: persisted.Region_id ?? this.DEFAULT_REGION_ID,
           Main_role_id: mainRoleId,
-          active: true,
+          active: p.active ?? true,
         });
       }
     }
-
+    
+    
+    // Upsert de jugadores por esports_player_id
     if (playersBatch.length > 0) {
-      // (Opcional) dedupe por esports_player_id antes del upsert
+      // dedupe defensivo
       const playersById = new Map<string, QueryDeepPartialEntity<Jugador>>();
       for (const r of playersBatch) {
         const k = String((r as any).esports_player_id);
@@ -458,8 +483,9 @@ async upsertTeamsAndPlayers(): Promise<void> {
             'team_id',
             'Region_id',
             'Main_role_id',
-            'display_name',
-            'country',
+            'summoner_name',   // ⬅️ nuevos
+            'first_name',
+            'last_name',
             'photo_url',
             'role_esports',
             'active',
@@ -470,6 +496,10 @@ async upsertTeamsAndPlayers(): Promise<void> {
         .execute();
 
       playerCount += playersUnique.length;
+
+      this.logger.log(
+        `[RiotEsportsService] Players: summonerName=${hadSummonerName}, first=${hadFirst}, last=${hadLast} (sobre ${playersBatch.length} en lote)`
+      );
     }
 
     teamCount += teamRows.length;
@@ -477,5 +507,171 @@ async upsertTeamsAndPlayers(): Promise<void> {
 
   this.logger.log(`[RiotEsportsService] Actualizados ${teamCount} equipos y ${playerCount} jugadores`);
 }
+
+
+
+/**
+   * Devuelve claves únicas de players y un ejemplo.
+   * Útil para ver cómo llegan displayName/name/country/role/etc. por liga.
+   */
+  async samplePlayersFields(opts: { leagueId?: string; limit?: number }) {
+    const limit = opts.limit ?? 50;
+
+    const leagues = await this.getLeagues();
+    const targetLeagues = opts.leagueId
+      ? leagues.filter(l => String(l.id) === String(opts.leagueId))
+      : leagues;
+
+    const examples: any[] = [];
+    const uniqueKeys = new Set<string>();
+    let playersCount = 0;
+
+    let hadDisplayName = 0;
+    let hadName = 0;
+    let hadCountry = 0;
+    let hadRole = 0;
+    let hadImage = 0;
+
+    for (const league of targetLeagues) {
+      const teams = await this.getTeamsForLeagueSmart(league);
+      for (const t of teams) {
+        const players = Array.isArray(t?.players) ? t.players : [];
+        for (const p of players) {
+          playersCount++;
+          if (examples.length < limit) examples.push(p);
+          Object.keys(p || {}).forEach(k => uniqueKeys.add(k));
+
+          if (p?.displayName) hadDisplayName++;
+          if (p?.name) hadName++;
+          if (p?.country) hadCountry++;
+          if (p?.role) hadRole++;
+          if (p?.image || p?.photoUrl) hadImage++;
+        }
+      }
+      if (examples.length >= limit) break;
+    }
+
+    return {
+      leaguesChecked: targetLeagues.map(l => ({ id: l.id, slug: l.slug })),
+      playersCount,
+      presenceSummary: {
+        displayName: hadDisplayName,
+        name: hadName,
+        country: hadCountry,
+        role: hadRole,
+        image: hadImage,
+      },
+      uniqueKeys: Array.from(uniqueKeys).sort(),
+      example: examples[0] ?? null,
+      note:
+        'presenceSummary cuenta ocurrencias brutas en el feed; no se deduplica por jugador.',
+    };
+  }
+
+  /**
+   * Dump crudo de getTeams (truncado) para inspeccionar el shape completo
+   * de equipos y players. Incluye keys únicas y métricas de presencia.
+   */
+  async getTeamsRaw(opts: {
+    leagueId?: string;
+    limit?: number;
+    maxPlayersPerTeam?: number;
+    stripImages?: boolean;
+  }) {
+    const { leagueId, stripImages } = opts;
+    const limit = Math.max(1, Math.min(opts.limit ?? 10, 500));
+    const maxPlayersPerTeam = Math.max(1, Math.min(opts.maxPlayersPerTeam ?? 20, 200));
+
+    const leagues = await this.getLeagues();
+    const targetLeagues = leagueId
+      ? leagues.filter(l => String(l.id) === String(leagueId))
+      : leagues;
+
+    const allTeams: any[] = [];
+    for (const league of targetLeagues) {
+      const teams = await this.getTeamsForLeagueSmart(league);
+      for (const t of teams) {
+        allTeams.push({ league: { id: league.id, slug: league.slug }, team: t });
+        if (allTeams.length >= limit) break;
+      }
+      if (allTeams.length >= limit) break;
+    }
+
+    // Claves únicas y métricas
+    const teamKeys = new Set<string>();
+    const playerKeys = new Set<string>();
+    let teamsWithPlayers = 0;
+    let playersTotal = 0;
+    let playersWithDisplayName = 0;
+    let playersWithName = 0;
+    let playersWithCountry = 0;
+    let playersWithRole = 0;
+
+    // Construye un payload truncado
+    const result = allTeams.map(({ league, team }) => {
+      Object.keys(team || {}).forEach(k => teamKeys.add(k));
+      let players = Array.isArray(team?.players) ? team.players : [];
+      if (players.length > 0) teamsWithPlayers++;
+
+      // recolección de métricas y truncado por equipo
+      const truncatedPlayers: Record<string, any>[] = [];
+
+      for (let i = 0; i < Math.min(players.length, maxPlayersPerTeam); i++) {
+        const p: Record<string, any> = players[i] ?? {};
+        playersTotal++;
+        if (p?.displayName) playersWithDisplayName++;
+        if (p?.name)        playersWithName++;
+        if (p?.country)     playersWithCountry++;
+        if (p?.role)        playersWithRole++;
+
+        Object.keys(p).forEach((k: string) => playerKeys.add(k));
+
+        // opcionalmente quitamos URLs pesadas de imagen
+        const pr: Record<string, any> = { ...p };
+        if (stripImages) {
+          if ('image' in pr)     pr.image = '[stripped]';
+          if ('photoUrl' in pr)  pr.photoUrl = '[stripped]';
+          if ('photo_url' in pr) pr.photo_url = '[stripped]';
+        }
+
+        truncatedPlayers.push(pr);
+      }
+
+      // idem imagen del team si hace falta
+      const teamCopy = { ...team };
+      if (stripImages) {
+        if ('image' in teamCopy) teamCopy.image = '[stripped]';
+        if ('logoUrl' in teamCopy) teamCopy.logoUrl = '[stripped]';
+        if ('logo_url' in teamCopy) teamCopy.logo_url = '[stripped]';
+      }
+      teamCopy.players = truncatedPlayers;
+
+      return { league, team: teamCopy };
+    });
+
+    return {
+      leaguesChecked: targetLeagues.map(l => ({ id: l.id, slug: l.slug })),
+      teamsReturned: allTeams.length,
+      teamsWithPlayers,
+      playersTotalConsidered: playersTotal,
+      presenceSummary: {
+        displayName: playersWithDisplayName,
+        name: playersWithName,
+        country: playersWithCountry,
+        role: playersWithRole,
+      },
+      uniqueTeamKeys: Array.from(teamKeys).sort(),
+      uniquePlayerKeys: Array.from(playerKeys).sort(),
+      limitInfo: {
+        teamsLimit: limit,
+        maxPlayersPerTeam,
+        stripImages,
+      },
+      sample: result, // equipos (limitados) con players truncados
+      note:
+        'sample está truncado (teamsLimit & maxPlayersPerTeam). Usa leagueId para concretar una liga concreta.',
+    };
+  }
+
 }
 

@@ -42,7 +42,7 @@ export class JugadorService {
     }
 
     if (search) {
-      qb.andWhere('jugador.display_name ILIKE :s OR jugador.summoner_name ILIKE :s', {
+      qb.andWhere('jugador.summoner_name ILIKE :s', {
         s: `%${search}%`,
       });
     }
@@ -105,7 +105,7 @@ export class JugadorService {
       .where('jugador.eliminated IS NOT NULL');
 
     if (search) {
-      qb.andWhere('jugador.display_name ILIKE :s OR jugador.summoner_name ILIKE :s', {
+      qb.andWhere('jugador.summoner_name ILIKE :s', {
         s: `%${search}%`,
       });
     }

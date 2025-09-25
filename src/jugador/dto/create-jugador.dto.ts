@@ -1,30 +1,6 @@
 import { IsOptional, IsString, IsInt, IsUUID, IsNumber, IsBoolean } from 'class-validator';
 
 export class CreateJugadorDto {
-  @IsOptional()
-  @IsString()
-  summoner_id?: string;
-
-  @IsOptional()
-  @IsUUID()
-  puuid?: string;
-
-  @IsOptional()
-  @IsString()
-  summoner_name?: string;
-
-  @IsOptional()
-  @IsString()
-  account_id?: string;
-
-  @IsOptional()
-  @IsString()
-  tier?: string;
-
-  @IsOptional()
-  @IsInt()
-  league_points?: number;
-
   @IsInt()
   team_id: number;
 
@@ -44,11 +20,15 @@ export class CreateJugadorDto {
 
   @IsOptional()
   @IsString()
-  display_name?: string;
+  last_name?: string;
 
   @IsOptional()
   @IsString()
-  country?: string;
+  first_name?: string;
+
+  @IsOptional()
+  @IsString()
+  summoner_name?: string;
 
   @IsOptional()
   @IsString()

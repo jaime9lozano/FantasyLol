@@ -15,24 +15,6 @@ export class Jugador {
   @PrimaryGeneratedColumn('increment', { type: 'bigint' })
   id: number;
 
-  @Column({ type: 'text', nullable: true, unique: true })
-  summoner_id?: string;
-
-  @Column({ type: 'uuid', nullable: true, unique: true })
-  puuid?: string;
-
-  @Column({ type: 'text', nullable: true, unique: true })
-  summoner_name?: string;
-
-  @Column({ type: 'text', nullable: true, unique: true })
-  account_id?: string;
-
-  @Column({ type: 'text', nullable: true })
-  tier?: string;
-
-  @Column({ type: 'int', nullable: true })
-  league_points?: number;
-
   @Column({ type: 'timestamptz', default: () => 'now()' })
   last_update: Date;
 
@@ -51,17 +33,20 @@ export class Jugador {
   @Column({ type: 'text', nullable: true, unique: true })
   esports_player_id?: string;
 
-  @Column({ type: 'text', nullable: true })
-  display_name?: string;
+  @Column({ type: 'text', nullable: true, name: 'summoner_name' })
+  summoner_name: string | null;
+
+  @Column({ type: 'text', nullable: true, name: 'first_name' })
+  first_name: string | null;
+
+  @Column({ type: 'text', nullable: true, name: 'last_name' })
+  last_name: string | null;
 
   @Column({ type: 'text', nullable: true })
-  country?: string;
+  photo_url: string | null;
 
   @Column({ type: 'text', nullable: true })
-  photo_url?: string;
-
-  @Column({ type: 'text', nullable: true })
-  role_esports?: string;
+  role_esports: string | null;
 
   @Column({ type: 'boolean', default: true })
   active: boolean;

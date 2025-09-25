@@ -18,7 +18,7 @@ export class Equipo {
 
   // 👇 Campos nuevos según tu SQL
   @Column({ type: 'text', nullable: true })
-  slug?: string | null;
+  slug: string | null;
 
   @Column({ type: 'text', nullable: true, unique: true })
   esports_team_id?: string;

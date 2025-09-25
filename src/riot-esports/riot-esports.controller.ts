@@ -133,4 +133,42 @@ export class RiotEsportsController {
       return this.formatError(e);
     }
   }
+
+
+   
+ /**
+   * Muestra claves únicas reales que vienen en players desde getTeams,
+   * con ejemplo y conteos de presencia.
+   */
+  @Get('diag/players-sample')
+  async playersSample(
+    @Query('leagueId') leagueId?: string,
+    @Query('limit') limit = '50',
+  ) {
+    return this.esports.samplePlayersFields({
+      leagueId,
+      limit: Number(limit) || 50,
+    });
+  }
+
+  /**
+   * Devuelve un dump crudo (truncado) de getTeams para inspección completa.
+   * Incluye keys únicas de team y players y métricas de presencia.
+   */
+  @Get('diag/teams-raw')
+  async teamsRaw(
+    @Query('leagueId') leagueId?: string,
+    @Query('limit') limit = '10',
+    @Query('maxPlayersPerTeam') maxPlayersPerTeam = '20',
+    @Query('stripImages') stripImages = '1', // 1 = quita URLs de imágenes para respuesta más ligera
+  ) {
+    return this.esports.getTeamsRaw({
+      leagueId,
+      limit: Number(limit) || 10,
+      maxPlayersPerTeam: Number(maxPlayersPerTeam) || 20,
+      stripImages: stripImages === '1',
+    });
+  }
+
+
 }
