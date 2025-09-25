@@ -20,6 +20,10 @@ export class CreateJugadorDto {
 
   @IsOptional()
   @IsString()
+  leaguepedia_player_id?: string;
+
+  @IsOptional()
+  @IsString()
   last_name?: string;
 
   @IsOptional()
@@ -41,4 +45,12 @@ export class CreateJugadorDto {
   @IsOptional()
   @IsBoolean()
   active?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  is_current?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  is_substitute?: boolean;
 }

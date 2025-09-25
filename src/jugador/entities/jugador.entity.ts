@@ -31,7 +31,10 @@ export class Jugador {
   clausula: number;
 
   @Column({ type: 'text', nullable: true, unique: true })
-  esports_player_id?: string;
+  esports_player_id: string | null;
+
+  @Column({ type: 'text', nullable: true, unique: true })
+  leaguepedia_player_id: string | null;
 
   @Column({ type: 'text', nullable: true, name: 'summoner_name' })
   summoner_name: string | null;
@@ -50,6 +53,12 @@ export class Jugador {
 
   @Column({ type: 'boolean', default: true })
   active: boolean;
+
+  @Column({ type: 'boolean', default: true })
+  is_current: boolean;
+
+  @Column({ type: 'boolean', default: false })
+  is_substitute: boolean;
 
   @DeleteDateColumn({ type: 'timestamptz', nullable: true, name: 'eliminated' })
   eliminated: Date | null;

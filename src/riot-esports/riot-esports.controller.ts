@@ -32,6 +32,16 @@ export class RiotEsportsController {
     };
   }
 
+  /** === Helpers para parsear query === */
+  private toBool(v?: string) { return v === '1' || v?.toLowerCase() === 'true'; }
+  private toList(v?: string) {
+    return v ? v.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+  }
+  private toInt(v?: string, def?: number) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : def;
+  }
+
   /** Sanity check: el controller está mapeado */
   @Get('ping')
   ping() {
@@ -134,41 +144,131 @@ export class RiotEsportsController {
     }
   }
 
+  // =========================================================
+  // 🚀 NUEVO: HÍBRIDO (Leaguepedia + REL)
+  // =========================================================
 
-   
- /**
-   * Muestra claves únicas reales que vienen en players desde getTeams,
-   * con ejemplo y conteos de presencia.
+  /**
+   * Solo híbrido:
+   * - REL (schedule) para detectar equipos en competición.
+   * - Leaguepedia (Cargo) para roster vigente (IsCurrent="1").
+   * - Marca is_current/is_substitute/Main_role_id en jugadores.
    */
-  @Get('diag/players-sample')
-  async playersSample(
-    @Query('leagueId') leagueId?: string,
-    @Query('limit') limit = '50',
+  @Get('sync/hybrid')
+  @Post('sync/hybrid')
+  async syncHybrid(
+    @Query('leagues') leagues?: string,        // p.ej.: "lec,lck"  (por defecto: lck,lpl,lec,lcs)
+    @Query('pastDays') pastDays?: string,      // p.ej.: "70"
+    @Query('futureDays') futureDays?: string,  // p.ej.: "28"
+    @Query('deactivateNonListed') deact?: string, // "1" | "true"
   ) {
-    return this.esports.samplePlayersFields({
-      leagueId,
-      limit: Number(limit) || 50,
-    });
+    if (this.lock.isRunning()) {
+      return { ok: false, message: 'Ya hay una ingesta en curso' };
+    }
+    try {
+      await this.lock.runExclusive(async () => {
+        await this.esports.upsertCurrentRostersHybrid({
+          leagues: this.toList(leagues),
+          pastDays: this.toInt(pastDays, undefined),
+          futureDays: this.toInt(futureDays, undefined),
+          deactivateNonListed: this.toBool(deact),
+        });
+      });
+      return { ok: true, scope: 'hybrid' };
+    } catch (e: any) {
+      return this.formatError(e);
+    }
   }
 
   /**
-   * Devuelve un dump crudo (truncado) de getTeams para inspección completa.
-   * Incluye keys únicas de team y players y métricas de presencia.
+   * Full:
+   * - Primero REL teams-players (para refrescar nombres/logos/summoner_name).
+   * - Después híbrido (Leaguepedia) para dejar roster vigente.
    */
-  @Get('diag/teams-raw')
-  async teamsRaw(
-    @Query('leagueId') leagueId?: string,
-    @Query('limit') limit = '10',
-    @Query('maxPlayersPerTeam') maxPlayersPerTeam = '20',
-    @Query('stripImages') stripImages = '1', // 1 = quita URLs de imágenes para respuesta más ligera
+  @Get('sync/hybrid/full')
+  @Post('sync/hybrid/full')
+  async syncHybridFull(
+    @Query('leagues') leagues?: string,
+    @Query('pastDays') pastDays?: string,
+    @Query('futureDays') futureDays?: string,
+    @Query('deactivateNonListed') deact?: string,
   ) {
-    return this.esports.getTeamsRaw({
-      leagueId,
-      limit: Number(limit) || 10,
-      maxPlayersPerTeam: Number(maxPlayersPerTeam) || 20,
-      stripImages: stripImages === '1',
-    });
+    if (this.lock.isRunning()) {
+      return { ok: false, message: 'Ya hay una ingesta en curso' };
+    }
+    try {
+      await this.lock.runExclusive(async () => {
+        await this.esports.upsertTeamsAndPlayers(); // REL base
+        await this.esports.upsertCurrentRostersHybrid({
+          leagues: this.toList(leagues),
+          pastDays: this.toInt(pastDays, undefined),
+          futureDays: this.toInt(futureDays, undefined),
+          deactivateNonListed: this.toBool(deact),
+        });
+      });
+      return { ok: true, scope: 'hybrid-full' };
+    } catch (e: any) {
+      return this.formatError(e);
+    }
   }
 
+  /**
+   * Diagnóstico: consulta directa a Leaguepedia (NO toca BD).
+   * Nota: accedemos al servicio de Leaguepedia que está inyectado dentro del RiotEsportsService.
+   * Si prefieres no usar "any", te creo un método público en el service p.ej. diagLeaguepediaRoster(team)
+   */
+  @Get('diag/leaguepedia/roster')
+  async diagLeaguepediaRoster(@Query('team') team?: string) {
+    if (!team) throw new BadRequestException('Falta ?team=');
+    try {
+      const svc: any = this.esports as any;
+      if (!svc.leaguepedia) {
+        throw new Error('LeaguepediaService no está disponible en RiotEsportsService');
+      }
+      const rows = await svc.leaguepedia.getCurrentRosterByTeamName(team);
+      return { ok: true, team, count: rows.length, roster: rows };
+    } catch (e: any) {
+      return this.formatError(e);
+    }
+  }
+
+
+
+  // Helpers ya añadidos antes:
+//  this.toBool(), this.toList(), this.toInt()
+
+/**
+ * Diagnóstico: busca equipos en Leaguepedia por nombre parcial.
+ * Útil para ver Name / _pageName reales antes de pedir roster vigente.
+ */
+@Get('diag/leaguepedia/teams-search')
+async diagTeamsSearch(@Query('q') q?: string) {
+  if (!q) throw new BadRequestException('Falta ?q=');
+  try {
+    const svc: any = this.esports as any;
+    if (!svc.leaguepedia) throw new Error('LeaguepediaService no está disponible');
+    const rows = await svc.leaguepedia.searchTeamsByName(q);
+    return { ok: true, q, count: rows.length, teams: rows };
+  } catch (e) {
+    return this.formatError(e);
+  }
+}
+
+/**
+ * Diagnóstico: roster vigente por _pageName (Teams._pageName).
+ * En algunos casos el Name no coincide exactamente, pero el _pageName sí.
+ */
+@Get('diag/leaguepedia/roster-by-page')
+async diagRosterByPage(@Query('teamPage') teamPage?: string) {
+  if (!teamPage) throw new BadRequestException('Falta ?teamPage=');
+  try {
+    const svc: any = this.esports as any;
+    if (!svc.leaguepedia) throw new Error('LeaguepediaService no está disponible');
+    const rows = await svc.leaguepedia.getCurrentRosterByPageName(teamPage);
+    return { ok: true, teamPage, count: rows.length, roster: rows };
+  } catch (e) {
+    return this.formatError(e);
+  }
+}
 
 }

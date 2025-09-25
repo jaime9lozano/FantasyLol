@@ -9,14 +9,16 @@ import { EsportsLeague } from 'src/esports_league/entities/esports_league.entity
 import { IngestionLockService } from './ingestion-lock.service';
 import { RiotEsportsController } from './riot-esports.controller';
 import { RiotEsportsTasks } from './riot-esports.tasks';
+import { LeaguepediaModule } from 'src/leaguepedia/leaguepedia.module';
 
 @Module({
   imports: [
-HttpModule.register({
+    HttpModule.register({
       timeout: 15000,   // 15s
       maxRedirects: 5,
     }),
     TypeOrmModule.forFeature([EsportsLeague, Equipo, Jugador, Rol]),
+    LeaguepediaModule,
   ],
   controllers: [RiotEsportsController],
   providers: [RiotEsportsService, RiotEsportsTasks, IngestionLockService],

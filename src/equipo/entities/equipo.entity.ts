@@ -1,4 +1,3 @@
-
 import { Entity, PrimaryGeneratedColumn, Column, DeleteDateColumn, ManyToOne, JoinColumn } from 'typeorm';
 import { EsportsLeague } from 'src/esports_league/entities/esports_league.entity';
 
