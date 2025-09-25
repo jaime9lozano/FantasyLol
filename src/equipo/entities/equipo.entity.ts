@@ -17,8 +17,8 @@ export class Equipo {
   logo_url?: string;
 
   // 👇 Campos nuevos según tu SQL
-  @Column({ type: 'text', nullable: true, unique: true })
-  slug?: string;
+  @Column({ type: 'text', nullable: true })
+  slug?: string | null;
 
   @Column({ type: 'text', nullable: true, unique: true })
   esports_team_id?: string;
@@ -39,5 +39,3 @@ export class Equipo {
   @DeleteDateColumn({ type: 'timestamptz', nullable: true, name: 'eliminated' })
   eliminated: Date | null;
 }
-
-
