@@ -61,15 +61,40 @@ export class RiotEsportsService {
   }
 
   private async fetchTeamsBySlugs(slugs: string[], chunkSize = 20): Promise<any[]> {
+    if (!slugs?.length) return [];
     const url = `${this.baseUrl}/getTeams`;
     const out: any[] = [];
+
     for (let i = 0; i < slugs.length; i += chunkSize) {
-      const batch = slugs.slice(i, i + chunkSize);
-      const data = await this.requestWithRetry<any>(url, { params: { hl: 'en-US', id: batch } });
-      const teams = data?.data?.teams ?? [];
-      out.push(...teams);
+      const batch = slugs.slice(i, i + chunkSize).filter(Boolean);
+      if (batch.length === 0) continue;
+
+      try {
+        // HOTFIX: enviar 'id' como lista separada por comas (no array)
+        const data = await this.requestWithRetry<any>(url, {
+          params: { hl: 'en-US', id: batch.join(',') },
+        });
+
+        // Soporta ambos formatos que devuelve REL según versión/cliente
+        const teams = data?.data?.teams ?? data?.teams ?? [];
+        out.push(...teams);
+      } catch (e: any) {
+        const status = e?.response?.status ?? e?.status;
+        const body = e?.response?.data;
+        this.logger?.warn?.(
+          `[fetchTeamsBySlugs] chunk fail size=${batch.length} status=${status} body=${JSON.stringify(body)}`
+        );
+        // Para 400 no reintentes; para 5xx tu requestWithRetry probablemente ya reintente
+      }
     }
-    return out;
+
+    // De-dup por id/slug (por si un equipo aparece en varios chunks)
+    const map = new Map<string, any>();
+    for (const t of out) {
+      const key = String(t?.id ?? t?.slug ?? '');
+      if (key) map.set(key, t);
+    }
+    return [...map.values()];
   }
 
   /** Headers por defecto para la API de LoLEsports */
@@ -123,11 +148,11 @@ export class RiotEsportsService {
       'tbd', 'tba', 'unknown', 'team', 'placeholder', 'none', 'null'
     ]);
 
-    private sanitizeSlug(input?: string | null): string | null {
-      if (!input) return null;
+    private sanitizeSlug(input?: string | null): string | undefined {
+      if (!input) return undefined;
       const s = input.trim();
-      if (!s) return null;
-      if (this.PLACEHOLDER_SLUGS.has(s.toLowerCase())) return null;
+      if (!s) return undefined;
+      if (this.PLACEHOLDER_SLUGS.has(s.toLowerCase())) return undefined;
       return s;
     }
 
@@ -137,6 +162,36 @@ export class RiotEsportsService {
       const s = String(v).trim();
       return s.length ? s : null;
     }
+
+    
+private filterTeamsByLeague(teams: any[], leagueId: string): any[] {
+  const lid = String(leagueId);
+  return (teams ?? []).filter(t => {
+    const ids = [
+      t?.homeLeague?.id,
+      t?.league?.id,
+      ...(Array.isArray(t?.leagues) ? t.leagues.map((x: any) => x?.id) : []),
+    ]
+      .filter(Boolean)
+      .map((x: any) => String(x));
+    return ids.includes(lid);
+  });
+}
+
+    
+  /** Resolver league_id desde el objeto team de REL; devuelve null si no hay match (nunca ''). */
+  private resolveLeagueIdFromTeam(t: any, leagueById: Map<string, any>): string | null {
+    const candidates: string[] = [
+      t?.homeLeague?.id,
+      t?.league?.id,
+      ...(Array.isArray(t?.leagues) ? t.leagues.map((x: any) => x?.id) : []),
+    ].filter(Boolean).map((x: any) => String(x));
+
+    for (const cand of candidates) {
+      if (leagueById.has(cand)) return cand;
+    }
+    return null;
+  }
 
   // ===========
   //   LEAGUES
@@ -174,45 +229,46 @@ export class RiotEsportsService {
    *  - leagueId = leagueId
    *  Si nada devuelve equipos, hace fallback a traer todos y filtra por homeLeague/league.
    */
-  private async getTeamsForLeagueSmart(league: { id: string; slug?: string }): Promise<any[]> {
-    const url = `${this.baseUrl}/getTeams`;
+  
+    /** Devuelve equipos para una liga, probando variantes y filtrando por liga; usa requestWithRetry. */
+    private async getTeamsForLeagueSmart(lg: { id: string; slug?: string; name?: string }): Promise<any[]> {
+      const url = `${this.baseUrl}/getTeams`;
+      const lid = String(lg.id);
+      const lname = lg.name ?? '';
 
-    // 1) id = league.id
-    let data = await this.requestWithRetry<any>(url, { params: { hl: 'en-US', id: league.id } });
-    let teams: any[] = data?.data?.teams ?? [];
-    if (teams.length > 0) return teams;
+      // Helper para intentar con distintos params y filtrar
+      const tryFetch = async (params: Record<string, string>) => {
+        try {
+          const data = await this.requestWithRetry<any>(url, { params: { hl: 'en-US', ...params } });
+          let teams = this.extractTeams(data);
+          teams = this.filterTeamsByLeagueSmart(teams, { id: lid, name: lname });
+          return teams;
+        } catch (e: any) {
+          const status = e?.response?.status ?? e?.status;
+          const body = e?.response?.data ?? e?.data;
+          this.logger.warn(`[getTeamsForLeagueSmart] params=${JSON.stringify(params)} fallo: status=${status} body=${JSON.stringify(body)}`);
+          return [];
+        }
+      };
 
-    // 2) leagueId = league.id
-    data = await this.requestWithRetry<any>(url, { params: { hl: 'en-US', leagueId: league.id } });
-    teams = data?.data?.teams ?? [];
-    if (teams.length > 0) return teams;
+      // 1) id=slug (suele filtrar mejor)
+      if (lg.slug) {
+        const bySlug = await tryFetch({ id: lg.slug });
+        if (bySlug.length) return bySlug;
+      }
 
-    // 3) id = league.slug
-    if (league.slug) {
-      data = await this.requestWithRetry<any>(url, { params: { hl: 'en-US', id: league.slug } });
-      teams = data?.data?.teams ?? [];
-      if (teams.length > 0) return teams;
+      // 2) id=league.id
+      const byId = await tryFetch({ id: lid });
+      if (byId.length) return byId;
+
+      // 3) leagueId=league.id (en tu entorno no filtra, pero igual sirve si trae homeLeague.name)
+      const byLeagueId = await tryFetch({ leagueId: lid });
+      if (byLeagueId.length) return byLeagueId;
+
+      // 4) Último recurso: sin filtros, y filtramos por nombre/ids en cliente
+      const all = await tryFetch({});
+      return all; // Puede venir vacío si nada matchea
     }
-
-    // 4) Fallback: todos los equipos -> filtrar por homeLeague/league info si existe
-    data = await this.requestWithRetry<any>(url, { params: { hl: 'en-US' } });
-    teams = data?.data?.teams ?? [];
-    if (teams.length > 0) {
-      const filtered = teams.filter((t: any) => {
-        const hl = t?.homeLeague || t?.league || t?.leagues?.[0]; // distintos payloads
-        return (
-          (hl?.id && String(hl.id) === String(league.id)) ||
-          (hl?.slug && league.slug && hl.slug === league.slug)
-        );
-      });
-      if (filtered.length > 0) return filtered;
-    }
-
-    this.logger.warn(
-      `getTeams: sin resultados para league=${league.slug || league.id} (probadas variantes id/leagueId/slug/fallback)`,
-    );
-    return [];
-  }
 
   // ===========
   //  HELPERS Roles
@@ -281,15 +337,6 @@ private async mapRoleToId(role?: string): Promise<number> {
     return this.DEFAULT_REGION_ID;
   }
 
-    /** Convierte roles de Leaguepedia a valores esperados por normalizeRole/mapRoleToId */
-  private normalizeLeaguepediaRole(input?: string | null): string | null {
-    if (!input) return null;
-    const r = input.trim().toLowerCase();
-    if (['bot','bottom','ad carry','adc','marksman'].includes(r)) return 'adc';
-    if (r === 'top' || r === 'jungle' || r === 'mid' || r === 'support') return r;
-    return null;
-  }
-
   // ===========
   //  INGESTA EQUIPOS + JUGADORES
   // ===========
@@ -303,6 +350,7 @@ private async mapRoleToId(role?: string): Promise<number> {
       const teamsApi = await this.getTeamsForLeagueSmart(league);
 
       // === (A) Normalizar entrada (NO dependemos de slug) ===
+      
       type TeamNorm = {
         id: string;
         name: string;
@@ -313,19 +361,33 @@ private async mapRoleToId(role?: string): Promise<number> {
         slug: string | null;     // null si placeholder o si colisiona
         players: any[];          // tal como venga del feed
       };
+      
+
+      const getTeamId = (t: any): string | null => {
+        const raw = t?.id ?? t?.teamId ?? t?.team?.id ?? null;
+        return raw ? String(raw).trim() : null;
+      };
+
+      // 👇 Type guard para que TS sepa que ya no hay nulls
+      const isTeamNorm = (x: TeamNorm | null): x is TeamNorm => x !== null;
 
       const teamsNorm: TeamNorm[] = teamsApi
-        .filter((t: any) => t?.id)
-        .map((t: any) => ({
-          id: String(t.id).trim(),
-          name: this.toStr(t.name ?? t.teamName) ?? 'TBD',
-          acronym: this.toStr(t.acronym),
-          image: this.toStr(t.image ?? t.logoUrl),
-          homeRegion: this.toStr(t.homeRegion ?? t.location),
-          leagueId: String(league.id).trim(),
-          slug: this.sanitizeSlug(t.slug),
-          players: Array.isArray(t.players) ? t.players : [],
-        }));
+        .map((t: any) => {
+          const id = getTeamId(t);
+          if (!id) return null;
+
+          return {
+            id,
+            name: this.toStr(t.name ?? t.teamName) ?? 'TBD',
+            acronym: this.toStr(t.acronym),
+            image: this.toStr(t.image ?? t.logoUrl),
+            homeRegion: this.toStr(t.homeRegion ?? t.location),
+            leagueId: String(league.id).trim(),
+            slug: this.sanitizeSlug(t.slug) ?? null,      // 👈 coalesce a null
+            players: Array.isArray(t.players) ? (t.players as any[]) : [],
+          };
+        })
+        .filter(isTeamNorm); // 👈 ahora es TeamNorm[]
 
       if (teamsNorm.length === 0) {
         this.logger.warn(`Liga ${league.slug || league.id}: 0 equipos con id válido.`);
@@ -560,53 +622,74 @@ private async mapRoleToId(role?: string): Promise<number> {
   }
 
   /**
-   * Híbrido: REL (ligas+calendario+equipos) + Leaguepedia (roster vigente IsCurrent="1")
-   * - Detecta equipos "en competición" por liga y ventana temporal en REL.
-   * - Upsert equipos (por esports_team_id) si hay alguno nuevo.
-   * - Obtiene roster actual de Leaguepedia por nombre de equipo (REL).
-   * - Upsert jugadores (marca is_current, is_substitute, role_id).
+   * Híbrido: REL (ligas+calendario+equipos) + Leaguepedia (roster derivado por Scoreboards)
+   * - Detecta equipos "en competición" por liga y ventana (REL Schedule) o fuerza por getTeams.
+   * - Upsert equipos (por esports_team_id) si aparece alguno nuevo.
+   * - Obtiene "roster vigente" a partir de ScoreboardPlayers+ScoreboardGames (últimos N días).
+   * - Upsert jugadores (is_current, is_substitute, Main_role_id) usando PlayerPage como leaguepedia_player_id.
    */
   async upsertCurrentRostersHybrid(opts?: {
-    leagues?: string[];            // slugs de liga (por defecto LCK/LPL/LEC/LCS)
-    pastDays?: number;             // 70 por defecto
-    futureDays?: number;           // 28 por defecto
-    deactivateNonListed?: boolean; // si true, marca is_current=false a los no devueltos por Leaguepedia
+    leagues?: string[];            // slugs de liga (por defecto: this.LEAGUE_WHITELIST)
+    pastDays?: number;             // ventana para schedule REL (por defecto: this.DEFAULT_WINDOW)
+    futureDays?: number;
+    deactivateNonListed?: boolean; // si true, marca is_current=false a los no devueltos en este ciclo
+    force?: boolean;               // si no hay schedule, fuerza con getTeams por liga
+    sinceDaysForScoreboards?: number;     // ventana de lineups (90 por defecto)
+    minGamesForStarter?: number;          // mínimo de partidas para titular (2 por defecto)
+    limitTeams?: number;                  // (opcional) limitar nº de equipos a procesar para pruebas
   }): Promise<void> {
+    // 0) Ligas en BD (ya te las traes desde tu método)
     const leagues = await this.getLeagues();
     const wanted = new Set(
-      (opts?.leagues?.length ? opts.leagues : this.LEAGUE_WHITELIST).map((s) => s.toLowerCase()),
+      (opts?.leagues?.length ? opts.leagues : this.LEAGUE_WHITELIST).map(s => s.toLowerCase()),
     );
     const window = {
       pastDays: opts?.pastDays ?? this.DEFAULT_WINDOW.pastDays,
       futureDays: opts?.futureDays ?? this.DEFAULT_WINDOW.futureDays,
     };
 
-    // 1) Slugs de equipos activos por liga (REL Schedule)
+    this.logger.log(`[Hybrid] wanted=${[...wanted].join(',')} window=${window.pastDays}/${window.futureDays}`);
+
+    // 1) Slugs de equipos activos vía Schedule; si vacío y force=1, fallback a getTeams por liga
     const activeTeamSlugs = new Set<string>();
     for (const lg of leagues) {
       if (!lg?.slug || !wanted.has(lg.slug.toLowerCase())) continue;
       const slugs = await this.getActiveTeamSlugsFromSchedule(lg.id, window);
-      slugs.forEach((s) => activeTeamSlugs.add(s));
+      slugs.forEach(s => activeTeamSlugs.add(s));
     }
+
+    if (activeTeamSlugs.size === 0 && opts?.force) {
+      for (const lg of leagues) {
+        if (!lg?.slug || !wanted.has(lg.slug.toLowerCase())) continue;
+        const teamsApi = await this.getTeamsForLeagueSmart(lg);
+        for (const t of teamsApi) {
+          if (t?.slug) activeTeamSlugs.add(String(t.slug));
+        }
+      }
+      this.logger.warn(`[Hybrid] FORCE=1: usando getTeams() por liga. leagues=${[...wanted].join(',')} slugs=${activeTeamSlugs.size}`);
+    }
+
     if (activeTeamSlugs.size === 0) {
-      this.logger.warn('No hay equipos activos en la ventana seleccionada.');
+      this.logger.warn('No hay equipos activos (Schedule vacío y sin force).');
       return;
     }
 
-    // 2) Traer equipos REL por slug
+    // 1.b) Limitar nº de equipos (debug / pruebas sin timeout)
     const teamSlugs = [...activeTeamSlugs];
+    if (opts?.limitTeams && Number.isFinite(opts.limitTeams) && (opts.limitTeams as number) > 0) {
+      teamSlugs.splice(opts.limitTeams);
+      this.logger.warn(`[Hybrid] Modo test: limitTeams=${opts.limitTeams}, procesando ${teamSlugs.length} equipos.`);
+    }
+
+    // 2) Traer equipos REL por slug (tu fetchTeamsBySlugs ya envía id=coma-separado)
     const relTeams = await this.fetchTeamsBySlugs(teamSlugs);
 
-    // 3) Upsert de equipos (por si aparece alguno nuevo en este split)
+    // 3) Upsert de equipos
     const leagueById = new Map<string, any>(leagues.map((l: any) => [String(l.id), l]));
     const teamRows: any[] = [];
     const regionCache = new Map<string, number>();
 
     for (const t of relTeams) {
-      const leagueMeta = t?.homeLeague || t?.league || t?.leagues?.[0] || {};
-      const leagueId = String(leagueMeta?.id ?? '') || null;
-      const leagueObj = leagueId ? leagueById.get(leagueId) : null;
-
       const teamId = String(t?.id ?? '').trim();
       if (!teamId) continue;
 
@@ -614,9 +697,13 @@ private async mapRoleToId(role?: string): Promise<number> {
       const acronym = this.toStr(t?.acronym) ?? undefined;
       const image = this.toStr(t?.image ?? t?.logoUrl) ?? undefined;
       const homeRegion = this.toStr(t?.homeRegion ?? t?.location);
-      const slug = this.sanitizeSlug(t?.slug);
-      const league_id_text = leagueId || (leagueObj ? String(leagueObj.id) : '');
+      const rawSlug = this.sanitizeSlug(t?.slug);
 
+      // Resolver league_id (NULL si no hay match; nunca '')
+      const league_id_text: string | null = this.resolveLeagueIdFromTeam(t, leagueById);
+      const leagueObj = league_id_text ? leagueById.get(league_id_text) : null;
+
+      // Región desde homeRegion + (opcional) league.region (cacheado)
       const regionKey = `${homeRegion}|${leagueObj?.region ?? ''}`;
       let regionId = regionCache.get(regionKey);
       if (regionId === undefined) {
@@ -624,19 +711,22 @@ private async mapRoleToId(role?: string): Promise<number> {
         regionCache.set(regionKey, regionId);
       }
 
+      if (!league_id_text) {
+        this.logger.warn(`[Teams Upsert] Team "${name}" (${teamId}) sin league_id resoluble. Insertará league_id = NULL.`);
+      }
+
       teamRows.push({
         esports_team_id: teamId,
         team_name: name,
         acronym,
         logo_url: image,
-        slug: slug ?? null,
-        league_id: league_id_text,
+        slug: rawSlug ?? null,             // slug puede mantenerse (quitaste unique en BD)
+        league_id: league_id_text,         // NULL si no hay match
         location: homeRegion ?? undefined,
         Region_id: regionId,
       });
     }
 
-    // Dedupe por esports_team_id y upsert
     if (teamRows.length > 0) {
       const rowsById = new Map<string, any>();
       for (const r of teamRows) {
@@ -650,80 +740,112 @@ private async mapRoleToId(role?: string): Promise<number> {
         .insert()
         .values(uniqueRows)
         .orUpdate(
-          ['team_name', 'acronym', 'logo_url', 'slug', 'league_id', 'location', 'Region_id'],
+          // ❗ No toques 'league_id' en updates (solo en inserts). Evitamos cambiarlo por error.
+          ['team_name','acronym','logo_url','location','Region_id'],
           ['esports_team_id'],
           { skipUpdateIfNoValuesChanged: true },
         )
         .execute();
     }
 
-    // 4) Mapear esports_team_id -> PK interno para FK en jugador
+    // 4) Mapear esports_team_id -> PK interno
     const esportsIds = relTeams.map((t: any) => String(t?.id)).filter(Boolean);
     const persistedTeams = await this.equipoRepo.find({
       where: { esports_team_id: In(esportsIds) },
       select: ['id', 'esports_team_id', 'team_name', 'Region_id'],
     });
-
     const byEsportsId = new Map<string, { id: number; Region_id: number; team_name: string }>();
     for (const e of persistedTeams) {
-      byEsportsId.set(String(e.esports_team_id), {
-        id: e.id,
-        Region_id: e.Region_id,
-        team_name: e.team_name,
-      });
+      byEsportsId.set(String(e.esports_team_id), { id: e.id, Region_id: e.Region_id, team_name: e.team_name });
     }
 
-    // 5) Por cada equipo, pedir roster vigente (Leaguepedia) usando el nombre del equipo (REL)
+    // 5) Derivar roster por team (Scoreboards) y reconciliar jugadores
     for (const t of relTeams) {
       const teamId = String(t?.id ?? '');
       if (!teamId) continue;
       const persisted = byEsportsId.get(teamId);
       if (!persisted) continue;
 
-      const teamName = this.toStr(t?.name ?? t?.teamName);
-      if (!teamName) continue;
+      const teamName = this.toStr(t?.name ?? t?.teamName) ?? '(sin nombre)';
+      const derived = await this.deriveRosterWithFallbacks(t, {
+        sinceDays: opts?.sinceDaysForScoreboards ?? 90,
+        minGamesForStarter: opts?.minGamesForStarter ?? 2,
+      });
 
-      const rows = await this.leaguepedia.getCurrentRosterByTeamName(teamName);
+      this.logger.log(
+        `[Hybrid] ${teamName} → derived: total=${derived.length}, titulares=${derived.filter(d => !d.isSubstitute).length}, suplentes=${derived.filter(d => d.isSubstitute).length}`
+      );
 
-      // Conjunto de claves para marcar quién queda “vigente” al cierre
-      const currentKeys = new Set<string>(); // summoner_name o leaguepedia_player_id
+      // Si no hay derived, NO desactivamos jugadores para evitar “apagones”
+      if (!derived || derived.length === 0) {
+        this.logger.warn(`[Hybrid] Sin roster derivado para "${teamName}". NO desactivo jugadores existentes para este equipo.`);
+        continue;
+      }
 
-      for (const r of rows) {
-        const lpPlayerId = r.ID?.trim() || null; // Players.ID (wiki)
-        const isSub = r.IsSubstitute === '1';
-        const roleForMap = this.normalizeLeaguepediaRole(r.Role);
-        const roleId = await this.mapRoleToId(roleForMap ?? undefined);
+      // Jugadores existentes del equipo (para reconciliar por nombre si falta leaguepedia_player_id)
+      const existingPlayers = await this.jugadorRepo.find({
+        where: { team_id: persisted.id },
+        select: [
+          'id',
+          'leaguepedia_player_id',
+          'summoner_name',
+          'first_name',
+          'last_name',
+          'photo_url',
+          'role_esports',
+          'Region_id',
+          'Main_role_id',
+          'is_current',
+          'is_substitute',
+        ],
+      });
 
-        // Heurística: usar el ID wiki como summoner_name si no hay otra cosa
-        const summonerName = lpPlayerId || null;
+      const normalize = (s?: string | null) =>
+        (s ?? '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
 
-        // =========================
-        // RESOLVER JUGADOR EXISTENTE (global):
-        // 1º leaguepedia_player_id (UNIQUE global), 2º summoner_name (global)
-        // =========================
-        let jugador = null as Jugador | null;
+      const nameIndex = new Map<string, any[]>();
+      for (const p of existingPlayers) {
+        const key = normalize(p.summoner_name);
+        if (!key) continue;
+        const list = nameIndex.get(key) ?? [];
+        list.push(p);
+        nameIndex.set(key, list);
+      }
 
-        if (lpPlayerId) {
-          jugador = await this.jugadorRepo.findOne({
-            where: { leaguepedia_player_id: lpPlayerId },
-          });
+      // Claves "vigentes" por PlayerPage (leaguepedia_player_id)
+      const currentKeys = new Set<string>();
+      let created = 0, updated = 0;
+
+      for (const d of derived) {
+        const lpKey = d.playerPage; // leaguepedia_player_id = PlayerPage (UNIQUE global)
+        const roleId = await this.mapRoleToId(d.role); // Top/Jungle/Mid/ADC/Support → Main_role_id
+        const isSub = d.isSubstitute === true;
+        const playerName = d.playerName ?? null; // ← vendrá de LeaguepediaService (ver patch abajo)
+
+        // 1) Buscar por leaguepedia_player_id
+        let jugador = await this.jugadorRepo.findOne({
+          where: { leaguepedia_player_id: lpKey },
+        });
+
+        // 2) Fallback por nombre (solo si hay un candidato claro en el mismo equipo)
+        if (!jugador && playerName) {
+          const candidates = nameIndex.get(normalize(playerName)) ?? [];
+          if (candidates.length === 1) {
+            jugador = candidates[0];
+            (jugador as any).leaguepedia_player_id = lpKey; // asigna identidad global y conserva campos REL
+          } else if (candidates.length > 1) {
+            this.logger.warn(`[Hybrid] Ambiguo por nombre "${playerName}" en ${teamName}: ${candidates.length} candidatos. Creará nuevo jugador.`);
+          }
         }
-        if (!jugador && summonerName) {
-          jugador = await this.jugadorRepo.findOne({
-            where: { summoner_name: summonerName },
-          });
-        }
 
-        // =========================
-        // CREAR O ACTUALIZAR
-        // =========================
         if (!jugador) {
+          // 3) Crear si no hubo match (campos REL quedarán null hasta fase REL->Players)
           const partial: DeepPartial<Jugador> = {
             team_id: persisted.id,
             Region_id: persisted.Region_id ?? this.DEFAULT_REGION_ID,
-            leaguepedia_player_id: lpPlayerId, // puede ser null
-            esports_player_id: null,           // no lo tocamos en híbrido
-            summoner_name: summonerName,       // puede ser null
+            leaguepedia_player_id: lpKey,
+            esports_player_id: null,
+            summoner_name: playerName ?? null,
             first_name: null,
             last_name: null,
             photo_url: null,
@@ -735,40 +857,37 @@ private async mapRoleToId(role?: string): Promise<number> {
             eliminated: null,
           };
           jugador = this.jugadorRepo.create(partial);
+          created++;
         } else {
-          // Actualiza equipo y flags del roster vigente
+          // 4) Actualizar existente pero SIN vaciar campos REL
           jugador.team_id = persisted.id;
           jugador.Region_id = persisted.Region_id ?? this.DEFAULT_REGION_ID;
+
+          if (!jugador.leaguepedia_player_id) (jugador as any).leaguepedia_player_id = lpKey;
+          if ((!jugador.summoner_name || !jugador.summoner_name.trim()) && playerName) {
+            jugador.summoner_name = playerName;
+          }
+          // Mantén first_name, last_name, photo_url, role_esports tal cual estén (no los borres)
           jugador.Main_role_id = roleId ?? jugador.Main_role_id ?? this.DEFAULT_ROLE_ID;
+
           jugador.is_current = true;
           jugador.is_substitute = isSub;
           jugador.active = true;
-
-          // Consolidar identidad Leaguepedia si faltaba
-          if (lpPlayerId && !jugador.leaguepedia_player_id) {
-            jugador.leaguepedia_player_id = lpPlayerId;
-          }
-          // Opcional: si no tiene summoner_name aún, rellénalo
-          if (!jugador.summoner_name && summonerName) {
-            jugador.summoner_name = summonerName;
-          }
+          updated++;
         }
 
         await this.jugadorRepo.save(jugador);
-
-        // Claves para “vigente”
-        if (summonerName) currentKeys.add(summonerName.toLowerCase());
-        if (lpPlayerId) currentKeys.add(lpPlayerId.toLowerCase());
+        if (lpKey) currentKeys.add(lpKey.toLowerCase());
       }
 
-      // 6) (Opcional) desactivar los no devueltos por Leaguepedia en este equipo
-      if (opts?.deactivateNonListed) {
+      this.logger.log(`[Hybrid] ${teamName} → jugadores creados=${created}, actualizados=${updated}`);
+
+      // 6) Desactivar no listados SOLO si tenemos derived (protección anti-apagón)
+      if (opts?.deactivateNonListed && derived && derived.length > 0) {
         const allTeamPlayers = await this.jugadorRepo.find({ where: { team_id: persisted.id } });
         for (const p of allTeamPlayers) {
-          const keys = [p.summoner_name, p.leaguepedia_player_id]
-            .filter(Boolean)
-            .map((s) => String(s).toLowerCase());
-          const inCurrent = keys.some((k) => currentKeys.has(k));
+          const keys = [p.leaguepedia_player_id].filter(Boolean).map(s => String(s).toLowerCase());
+          const inCurrent = keys.some(k => currentKeys.has(k));
           if (!inCurrent) {
             p.is_current = false;
             await this.jugadorRepo.save(p);
@@ -777,6 +896,71 @@ private async mapRoleToId(role?: string): Promise<number> {
       }
     }
 
-    this.logger.log(`[RiotEsportsService] Híbrido OK: rosters vigentes actualizados.`);
+    this.logger.log(`[RiotEsportsService] Híbrido (scoreboards) OK: rosters vigentes actualizados.`);
   }
+
+  /** "g2-esports" -> "G2 Esports": útil para intentar LP si el nombre REL no casa. */
+  private toTitleFromSlug(slug?: string): string | undefined {
+  if (!slug) return undefined;
+  const words = String(slug).split('-').filter(Boolean);
+  return words.map(w => w[0]?.toUpperCase() + w.slice(1)).join(' ');
+}
+
+  /** Intenta roster con nombre primario y con variante desde slug; devuelve el primero no vacío. */
+    private async deriveRosterWithFallbacks(
+  t: any,
+  opts: { sinceDays: number; minGamesForStarter: number }
+) {
+  const namesToTry: string[] = [];
+
+  const primary = this.toStr(t?.name ?? t?.teamName);
+  if (primary) namesToTry.push(primary);
+
+  const rawSlug = this.sanitizeSlug(t?.slug);      // string | undefined
+  const fromSlug = this.toTitleFromSlug(rawSlug);  // string | undefined
+  if (fromSlug) namesToTry.push(fromSlug);
+
+  for (const name of namesToTry) {
+    // 'name' es SIEMPRE string aquí
+    const r = await this.leaguepedia.getCurrentRosterFromScoreboards(name, opts);
+    if (r?.length) return r;
+  }
+  return [];
+}
+
+    /** Extrae array de teams del payload, tolerando variantes.
+     * Si requestWithRetry ya retorna 'response.data', esto funciona igual.
+     */
+    private extractTeams(payload: any): any[] {
+      return payload?.data?.teams ?? payload?.teams ?? [];
+    }
+
+    /** Filtra teams por liga usando id o, si no hay ids, por nombre de liga. */
+    private filterTeamsByLeagueSmart(teams: any[], league: { id: string; name?: string }): any[] {
+      const lid = String(league.id);
+      const lname = (league.name ?? '').toLowerCase();
+
+      return (teams ?? []).filter(t => {
+        // 1) Si el team trae ids de liga, usa ids
+        const ids = [
+          t?.homeLeague?.id,
+          t?.league?.id,
+          ...(Array.isArray(t?.leagues) ? t.leagues.map((x: any) => x?.id) : []),
+        ]
+          .filter(Boolean)
+          .map((x: any) => String(x));
+        if (ids.length > 0) return ids.includes(lid);
+
+        // 2) Si no hay ids, filtra por nombre de liga
+        const hname = (t?.homeLeague?.name ?? '').toLowerCase();
+        if (hname && lname && hname === lname) return true;
+
+        if (Array.isArray(t?.leagues)) {
+          const nameHit = t.leagues.some((x: any) => (x?.name ?? '').toLowerCase() === lname);
+          if (nameHit) return true;
+        }
+
+        return false;
+      });
+    }
 }

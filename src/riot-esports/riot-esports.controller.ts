@@ -1,5 +1,6 @@
 // src/riot-esports/riot-esports.controller.ts
-import { Controller, Get, Post, Query, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Query, BadRequestException, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { RiotEsportsService } from './riot-esports.service';
 import { IngestionLockService } from './ingestion-lock.service';
 
@@ -149,18 +150,18 @@ export class RiotEsportsController {
   // =========================================================
 
   /**
-   * Solo híbrido:
-   * - REL (schedule) para detectar equipos en competición.
-   * - Leaguepedia (Cargo) para roster vigente (IsCurrent="1").
-   * - Marca is_current/is_substitute/Main_role_id en jugadores.
+   * Solo híbrido (REL + Leaguepedia por scoreboards)
    */
   @Get('sync/hybrid')
   @Post('sync/hybrid')
   async syncHybrid(
-    @Query('leagues') leagues?: string,        // p.ej.: "lec,lck"  (por defecto: lck,lpl,lec,lcs)
-    @Query('pastDays') pastDays?: string,      // p.ej.: "70"
-    @Query('futureDays') futureDays?: string,  // p.ej.: "28"
-    @Query('deactivateNonListed') deact?: string, // "1" | "true"
+    @Query('leagues') leagues?: string,                // ej: "lec,lck"
+    @Query('pastDays') pastDays?: string,              // ventana schedule REL
+    @Query('futureDays') futureDays?: string,          // ventana schedule REL
+    @Query('deactivateNonListed') deact?: string,      // "1" | "true"
+    @Query('force') force?: string,                    // "1" | "true"  <-- FALTABA
+    @Query('sinceDaysForScoreboards') sinceDaysSB?: string,     // opcional: 90 por defecto
+    @Query('minGamesForStarter') minGamesStarter?: string,      // opcional: 2 por defecto
   ) {
     if (this.lock.isRunning()) {
       return { ok: false, message: 'Ya hay una ingesta en curso' };
@@ -172,6 +173,9 @@ export class RiotEsportsController {
           pastDays: this.toInt(pastDays, undefined),
           futureDays: this.toInt(futureDays, undefined),
           deactivateNonListed: this.toBool(deact),
+          force: this.toBool(force), // <-- AHORA SÍ SE PASA
+          sinceDaysForScoreboards: this.toInt(sinceDaysSB, undefined),
+          minGamesForStarter: this.toInt(minGamesStarter, undefined),
         });
       });
       return { ok: true, scope: 'hybrid' };
@@ -181,36 +185,53 @@ export class RiotEsportsController {
   }
 
   /**
-   * Full:
-   * - Primero REL teams-players (para refrescar nombres/logos/summoner_name).
-   * - Después híbrido (Leaguepedia) para dejar roster vigente.
+   * Full: primero REL teams-players y luego híbrido
    */
-  @Get('sync/hybrid/full')
-  @Post('sync/hybrid/full')
-  async syncHybridFull(
-    @Query('leagues') leagues?: string,
-    @Query('pastDays') pastDays?: string,
-    @Query('futureDays') futureDays?: string,
-    @Query('deactivateNonListed') deact?: string,
-  ) {
-    if (this.lock.isRunning()) {
-      return { ok: false, message: 'Ya hay una ingesta en curso' };
-    }
-    try {
-      await this.lock.runExclusive(async () => {
-        await this.esports.upsertTeamsAndPlayers(); // REL base
-        await this.esports.upsertCurrentRostersHybrid({
-          leagues: this.toList(leagues),
-          pastDays: this.toInt(pastDays, undefined),
-          futureDays: this.toInt(futureDays, undefined),
-          deactivateNonListed: this.toBool(deact),
-        });
-      });
-      return { ok: true, scope: 'hybrid-full' };
-    } catch (e: any) {
-      return this.formatError(e);
-    }
+  
+@Get('sync/hybrid/full')
+@Post('sync/hybrid/full')
+async syncHybridFull(
+  @Query('leagues') leagues?: string,
+  @Query('pastDays') pastDays?: string,
+  @Query('futureDays') futureDays?: string,
+  @Query('deactivateNonListed') deact?: string,
+  @Query('force') force?: string,
+  @Query('sinceDaysForScoreboards') sinceDaysSB?: string,
+  @Query('minGamesForStarter') minGamesStarter?: string,
+  @Query('limitTeams') limitTeams?: string,        // ← NUEVO (opcional)
+  @Res({ passthrough: true }) res?: Response,      // ← NUEVO para setTimeout
+) {
+  // Evita 504 del proxy mientras la ingesta tarda
+  res?.setTimeout(10 * 60 * 1000); // 10 min
+
+  if (this.lock.isRunning()) {
+    return { ok: false, message: 'Ya hay una ingesta en curso' };
   }
+
+  try {
+    await this.lock.runExclusive(async () => {
+      // 1) REL base (equipos + jugadores)
+      await this.esports.upsertTeamsAndPlayers();
+
+      // 2) Híbrido (ajusta roster vigente desde Leaguepedia)
+      await this.esports.upsertCurrentRostersHybrid({
+        leagues: this.toList(leagues),
+        pastDays: this.toInt(pastDays, undefined),
+        futureDays: this.toInt(futureDays, undefined),
+        deactivateNonListed: this.toBool(deact),
+        force: this.toBool(force),
+        sinceDaysForScoreboards: this.toInt(sinceDaysSB, undefined),
+        minGamesForStarter: this.toInt(minGamesStarter, undefined),
+        // SOLO para pruebas: limita número de equipos
+        limitTeams: this.toInt(limitTeams, undefined),
+      });
+    });
+    return { ok: true, scope: 'hybrid-full' };
+  } catch (e: any) {
+    return this.formatError(e);
+  }
+}
+
 
   /**
    * Diagnóstico: consulta directa a Leaguepedia (NO toca BD).
@@ -270,5 +291,18 @@ async diagRosterByPage(@Query('teamPage') teamPage?: string) {
     return this.formatError(e);
   }
 }
+
+  @Get('diag/leaguepedia/lineup')
+  async diagRecentLineup(@Query('team') team?: string, @Query('sinceDays') sinceDays?: string) {
+    if (!team) throw new BadRequestException('Falta ?team=');
+    try {
+      const days = Number(sinceDays ?? 90);
+      const svc: any = this.esports as any;
+      const rows = await svc.leaguepedia.getCurrentRosterFromScoreboards(team, { sinceDays: days });
+      return { ok: true, team, sinceDays: days, count: rows.length, roster: rows };
+    } catch (e) {
+      return this.formatError(e);
+    }
+  }
 
 }
