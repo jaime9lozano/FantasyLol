@@ -96,7 +96,8 @@ export class LeaguepediaTeamsService {
    * Descubre equipos que jugaron en una liga y los inserta/actualiza con catálogo + logos.
    */
   
-async upsertTeamsByLeagueNameLike(leagueNameLike: string, from?: string, to?: string) {
+
+  async upsertTeamsByLeagueNameLike(leagueNameLike: string, from?: string, to?: string) {
     const names = await this.listTeamsPlayedInLeague(leagueNameLike, from, to);
     if (!names.length) return { discovered: 0, enriched: 0, upserts: 0 };
 
@@ -105,7 +106,7 @@ async upsertTeamsByLeagueNameLike(leagueNameLike: string, from?: string, to?: st
       try {
         const row = await this.fetchTeamCatalogByName(n);
         if (row) enriched.push(row);
-        await new Promise(r => setTimeout(r, 100));
+        await new Promise(r => setTimeout(r, 100)); // rate-limit suave
       } catch (e) {
         this.logger.warn(`No se pudo enriquecer "${n}": ${(e as Error).message}`);
       }
@@ -116,39 +117,7 @@ async upsertTeamsByLeagueNameLike(leagueNameLike: string, from?: string, to?: st
 
     let upserts = 0;
     for (const row of enriched) {
-      const lpPage = row.TeamPage ?? null;
-      const logoKey = row.LogoFile ? (row.LogoFile.startsWith('File:') ? row.LogoFile : `File:${row.LogoFile}`) : undefined;
-      const logoUrl = logoKey ? imageMap[logoKey] ?? null : null;
-
-      const existing = lpPage
-        ? await this.teamRepo.createQueryBuilder('t')
-            .where('LOWER(t.leaguepedia_team_page) = LOWER(:p)', { p: lpPage })
-            .getOne()
-        : await this.teamRepo.createQueryBuilder('t')
-            .where('LOWER(t.team_name) = LOWER(:n)', { n: row.TeamName })
-            .getOne();
-
-      if (existing) {
-        await this.teamRepo.update({ id: existing.id }, {
-          leaguepediaTeamPage: lpPage,
-          teamName: row.TeamName,
-          short: row.Short ?? null,
-          region: row.Region ?? null,
-          location: row.Location ?? null,
-          logoFile: row.LogoFile ?? null,
-          logoUrl,
-        });
-      } else {
-        await this.teamRepo.insert({
-          leaguepediaTeamPage: lpPage,
-          teamName: row.TeamName,
-          short: row.Short ?? null,
-          region: row.Region ?? null,
-          location: row.Location ?? null,
-          logoFile: row.LogoFile ?? null,
-          logoUrl,
-        });
-      }
+      await this.upsertTeamFromRow(row, imageMap); // <-- reutiliza el método privado
       upserts++;
     }
 
