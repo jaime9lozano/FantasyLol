@@ -179,5 +179,4 @@ export class LeaguepediaController {
     }
     return { year: y, officialOnly, rowsCount: rows.length, sample: rows.slice(0, 10) };
   }
-
 }

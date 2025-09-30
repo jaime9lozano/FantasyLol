@@ -1,11 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
-
 import { LeaguepediaClient } from './leaguepedia.client';
 import { CargoResponse, LpGameRow, LpPlayerGameStatRow, LpTournamentRow } from './dto/cargo.dto';
-import { normalizeRole, toBoolYN, toInt, toUtcDate } from './leaguepedia.helpers';
-
+import { buildLeagueWhere, leagueAliases, normalizeRole, toBoolYN, toInt, toUtcDate } from './leaguepedia.helpers';
 import { Tournament } from '../entities/tournament.entity';
 import { Game } from '../entities/game.entity';
 import { Player } from '../entities/player.entity';
@@ -94,19 +92,36 @@ export class LeaguepediaStatsService {
   // ------------------ Games ------------------
 
   async fetchGamesByLeagueNameLike(leagueNameLike: string, from?: string, to?: string): Promise<LpGameRow[]> {
-    const where: string[] = [`T.Name LIKE "%${leagueNameLike}%"`];
-    if (from) where.push(`SG.DateTime_UTC >= "${from}"`);
-    if (to) where.push(`SG.DateTime_UTC <= "${to}"`);
+    const common = [
+      from ? `SG.DateTime_UTC >= "${from}"` : null,
+      to   ? `SG.DateTime_UTC <= "${to}"`   : null,
+    ].filter(Boolean).join(' AND ');
 
-    const rows = await this.lp.cargoQueryAll<LpGameRow>({
+    const makeWhere = (cond: string) => common ? `${cond} AND ${common}` : cond;
+
+    // 1) Por nombre del torneo
+    let rows = await this.lp.cargoQueryAll<LpGameRow>({
       tables: 'ScoreboardGames=SG,Tournaments=T',
       joinOn: 'SG.OverviewPage=T.OverviewPage',
       fields:
         'SG.GameId=GameId,SG.DateTime_UTC=DateTimeUTC,SG.Team1,SG.Team2,SG.WinTeam,SG.LossTeam,SG.Winner,SG.Patch,SG.OverviewPage=OverviewPage,T.Name=Tournament',
-      where: where.join(' AND '),
+      where: makeWhere(`T.Name LIKE "%${leagueNameLike}%"`),
       orderBy: 'SG.DateTime_UTC ASC',
       limit: 500,
     });
+
+    // 2) Fallback por League (p.ej. "League of Legends Champions Korea")
+    if (!rows.length) {
+      rows = await this.lp.cargoQueryAll<LpGameRow>({
+        tables: 'ScoreboardGames=SG,Tournaments=T',
+        joinOn: 'SG.OverviewPage=T.OverviewPage',
+        fields:
+          'SG.GameId=GameId,SG.DateTime_UTC=DateTimeUTC,SG.Team1,SG.Team2,SG.WinTeam,SG.LossTeam,SG.Winner,SG.Patch,SG.OverviewPage=OverviewPage,T.Name=Tournament',
+        where: makeWhere(`T.League LIKE "%${leagueNameLike}%"`),
+        orderBy: 'SG.DateTime_UTC ASC',
+        limit: 500,
+      });
+    }
     return rows;
   }
 
@@ -168,19 +183,25 @@ export class LeaguepediaStatsService {
  * Devuelve ligas DISTINCT desde Tournaments para un año y/o filtro por nombre.
  * Útil para seed inicial de la tabla 'league'.
  */
-async fetchDistinctLeaguesFromTournaments(
+  async fetchDistinctLeaguesFromTournaments(
   year?: number,
   officialOnly?: boolean,
-  nameLike?: string, // opcional filtro por nombre de torneo (p.ej. "%LEC%")
-): Promise<Array<{ League: string; Region?: string; LeagueIconKey?: string }>> {
+  nameLike?: string, // opcional filtro por nombre/league (acepta patrón o code)
+): Promise<Array<{ League: string; Region?: string; LeagueIconKey?: string; IsOfficial?: '0' | '1' }>> {
   const where: string[] = [];
   if (year) where.push(`Tournaments.Year="${year}"`);
   if (officialOnly != null) where.push(`Tournaments.IsOfficial="${officialOnly ? '1' : '0'}"`);
-  if (nameLike) where.push(`Tournaments.Name LIKE "${nameLike}"`);
 
-  const rows = await this.lp.cargoQueryAll<{ League: string; Region?: string; LeagueIconKey?: string }>({
+  if (nameLike) {
+    // Aplicamos alias también aquí por si filtras por "LEC", etc.
+    const aliases = leagueAliases(nameLike);
+    const conds = aliases.map(a => `(Tournaments.Name LIKE "%${a}%" OR Tournaments.League LIKE "%${a}%")`);
+    where.push(`(${conds.join(' OR ')})`);
+  }
+
+  const rows = await this.lp.cargoQueryAll<{ League: string; Region?: string; LeagueIconKey?: string; IsOfficial?: '0' | '1' }>({
     tables: 'Tournaments',
-    fields: 'Tournaments.League=League,Tournaments.Region=Region,Tournaments.LeagueIconKey=LeagueIconKey',
+    fields: 'Tournaments.League=League,Tournaments.Region=Region,Tournaments.LeagueIconKey=LeagueIconKey,MAX(Tournaments.IsOfficial)=IsOfficial',
     where: where.length ? where.join(' AND ') : undefined,
     groupBy: 'Tournaments.League,Tournaments.Region,Tournaments.LeagueIconKey',
     orderBy: 'Tournaments.League ASC',
@@ -219,41 +240,51 @@ private deriveLeagueCodeNameRegion(
  * Inserta/actualiza ligas en tabla 'league' a partir de Tournaments (DISTINCT League).
  * Puedes pasar overrideCode/overrideRegion cuando filtres por una liga concreta.
  */
-async upsertLeaguesFromTournaments(
-  rows: Array<{ League: string; Region?: string; LeagueIconKey?: string }>,
-  overrideCode?: string,
-  overrideRegion?: string,
-) {
-  let upserts = 0;
-  for (const r of rows) {
-    const { code, name, region } = this.deriveLeagueCodeNameRegion(r, overrideCode, overrideRegion);
+  async upsertLeaguesFromTournaments(
+    rows: Array<{ League: string; Region?: string; LeagueIconKey?: string; IsOfficial?: '0' | '1' }>,
+    overrideCode?: string,
+    overrideRegion?: string,
+  ) {
+    let upserts = 0;
 
-    // Upsert por LOWER(code)
-    const existing = await this.tournamentRepo.manager.query(
-      `SELECT id FROM league WHERE code IS NOT NULL AND LOWER(code)=LOWER($1)`,
-      [code],
-    );
-    if (existing?.[0]?.id) {
-      await this.tournamentRepo.manager.query(
-        `UPDATE league SET name=$1, region=$2, updated_at=NOW() WHERE id=$3`,
-        [name, region, existing[0].id],
+    for (const r of rows) {
+      const { code, name, region } = this.deriveLeagueCodeNameRegion(r, overrideCode, overrideRegion);
+      // is_official: si no viene en el feed, no lo cambiamos (COALESCE en UPDATE)
+      const isOfficial: boolean | null =
+        r?.IsOfficial != null ? (String(r.IsOfficial) === '1') : null;
+
+      // Upsert por LOWER(code)
+      const existing = await this.tournamentRepo.manager.query(
+        `SELECT id FROM league WHERE code IS NOT NULL AND LOWER(code)=LOWER($1) LIMIT 1`,
+        [code],
       );
-    } else {
-      await this.tournamentRepo.manager.query(
-        `INSERT INTO league (code, name, region) VALUES ($1,$2,$3)`,
-        [code, name, region],
-      );
+
+      if (existing?.[0]?.id) {
+        await this.tournamentRepo.manager.query(
+          `UPDATE league
+            SET name = $1,
+                region = $2,
+                is_official = COALESCE($3, is_official),
+                updated_at = NOW()
+          WHERE id = $4`,
+          [name, region, isOfficial, existing[0].id],
+        );
+      } else {
+        await this.tournamentRepo.manager.query(
+          `INSERT INTO league (code, name, region, is_official)
+          VALUES ($1, $2, $3, $4)`,
+          [code, name, region, isOfficial],
+        );
+      }
+
+      upserts++;
     }
-    upserts++;
+
+    return upserts;
   }
-  return upserts;
-}
 
 
   // ------------------ Player Stats ------------------
-
-  // src/leaguepedia/leaguepedia.stats.service.ts
-
   async fetchPlayerStatsByLeagueNameLike(
     leagueNameLike: string,
     from: string,
@@ -586,8 +617,10 @@ async fetchDistinctPlayerPagesByLeagueNameLike(
   to: string,
   officialOnly?: boolean,
 ): Promise<string[]> {
+  const aliases = leagueAliases(leagueNameLike);
+  const conds = aliases.map(a => buildLeagueWhere(a));
   const where: string[] = [
-    `T.Name LIKE "%${leagueNameLike}%"`,
+    `(${conds.join(' OR ')})`,
     `SP.DateTime_UTC >= "${from}"`,
     `SP.DateTime_UTC <= "${to}"`,
   ];
@@ -602,27 +635,6 @@ async fetchDistinctPlayerPagesByLeagueNameLike(
     orderBy: 'SP.Link ASC',
     limit: 500,
   });
-
-  // Fallback: si por nombre no devuelve, intenta por League
-  if (!rows.length) {
-    const where2 = [
-      `T.League LIKE "%${leagueNameLike}%"`,
-      `SP.DateTime_UTC >= "${from}"`,
-      `SP.DateTime_UTC <= "${to}"`,
-    ];
-    if (officialOnly != null) where2.push(`T.IsOfficial="${officialOnly ? '1' : '0'}"`);
-
-    const rows2 = await this.lp.cargoQueryAll<{ PlayerPage: string }>({
-      tables: 'ScoreboardPlayers=SP,Tournaments=T',
-      joinOn: 'SP.OverviewPage=T.OverviewPage',
-      fields: 'SP.Link=PlayerPage',
-      where: where2.join(' AND '),
-      groupBy: 'SP.Link',
-      orderBy: 'SP.Link ASC',
-      limit: 500,
-    });
-    return rows2.map(r => r.PlayerPage).filter(Boolean);
-  }
 
   return rows.map(r => r.PlayerPage).filter(Boolean);
 }
