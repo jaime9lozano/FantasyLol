@@ -5,7 +5,7 @@ import { Repository } from 'typeorm';
 import { LeaguepediaClient } from './leaguepedia.client';
 import { CargoResponse, LpTeamRow } from './dto/cargo.dto';
 import { Team } from '../entities/team.entity';
-import { buildLeagueWhere, leagueAliases } from './leaguepedia.helpers';
+import { buildLeagueWhere, leagueAliases, looksLikeLeagueIconKey } from './leaguepedia.helpers';
 
 @Injectable()
 export class LeaguepediaTeamsService {
@@ -20,23 +20,74 @@ export class LeaguepediaTeamsService {
    * Devuelve la lista DISTINCT de Team (nombres) que han jugado en una liga
    * filtrando por nombre de torneo (T.Name LIKE "%...%") y rango (opcional).
    */
-  async listTeamsPlayedInLeague(leagueNameLike: string, from?: string, to?: string): Promise<string[]> {
-    const aliases = leagueAliases(leagueNameLike);
-    const conds = aliases.map(a => buildLeagueWhere(a));
-    const where: string[] = [ `(${conds.join(' OR ')})` ];
-    if (from) where.push(`SP.DateTime_UTC >= "${from}"`);
-    if (to) where.push(`SP.DateTime_UTC <= "${to}"`);
+  async listTeamsPlayedInLeague(
+  leagueNameLike: string,
+  from?: string,
+  to?: string,
+): Promise<string[]> {
+  const aliases = leagueAliases(leagueNameLike);
 
-    const rows = await this.lp.cargoQueryAll<{ Team: string }>({
-      tables: 'ScoreboardPlayers=SP,Tournaments=T',
-      joinOn: 'SP.OverviewPage=T.OverviewPage',
-      fields: 'SP.Team',
-      where: where.join(' AND '),
-      groupBy: 'SP.Team',
-      orderBy: 'SP.Team ASC',
-      limit: 500,
-    });
-    return rows.map(r => r.Team).filter(Boolean);
+  // 1) Filtros anti-ruido comunes
+  const commonFilters: string[] = [
+    `T.IsOfficial="1"`,
+    `(T.TournamentLevel="Primary" OR T.TournamentLevel IS NULL)`,
+    // Excluir subligas / academias habituales
+    `T.League NOT LIKE "%Challenger%"`,
+    `T.Name   NOT LIKE "%Challenger%"`,
+    `T.League NOT LIKE "%Challengers%"`,
+    `T.Name   NOT LIKE "%Challengers%"`,
+    `T.League NOT LIKE "%Academy%"`,
+    `T.Name   NOT LIKE "%Academy%"`,
+    `T.League NOT LIKE "%LDL%"`,   // Liga de desarrollo de LPL
+    `T.Name   NOT LIKE "%LDL%"`,
+    // Puedes añadir más si detectas ruido ("Amateur", "Open", etc.)
+    `SP.Team IS NOT NULL`,
+  ];
+  if (from) commonFilters.push(`SP.DateTime_UTC >= "${from}"`);
+  if (to)   commonFilters.push(`SP.DateTime_UTC <= "${to}"`);
+
+  // 2) Intento "pro": LeagueIconKey exacto si parece un key tipo LCK21 / LPL2020
+  const tryIconKey = looksLikeLeagueIconKey(leagueNameLike);
+  if (tryIconKey) {
+    const iconKey = leagueNameLike.trim();
+    // PRO TIP: algunas wikis usan T.LeagueIcon en lugar de T.LeagueIconKey.
+    // Probamos primero con LeagueIconKey y si la llamada falla o devuelve 0, hacemos fallback.
+    const iconWhere = [`T.LeagueIconKey="${iconKey}"`, ...commonFilters].join(' AND ');
+    try {
+      const rowsIcon = await this.lp.cargoQueryAll<{ Team: string }>({
+        tables: 'ScoreboardPlayers=SP,Tournaments=T',
+        joinOn: 'SP.OverviewPage=T.OverviewPage',
+        fields: 'SP.Team',
+        where: iconWhere,
+        groupBy: 'SP.Team',
+        orderBy: 'SP.Team ASC',
+        limit: 500,
+      });
+
+      if (rowsIcon?.length) {
+        // Opcional: ordenar por si el API no respeta del todo el order_by con group
+        return rowsIcon.map(r => r.Team).filter(Boolean);
+      }
+    } catch {
+      // Si el campo T.LeagueIconKey no existe en esta instancia de Cargo, caemos a alias.
+    }
+  }
+
+  // 3) Fallback: OR de alias (siglas + nombre largo + literal del user)
+  const conds = aliases.map(a => buildLeagueWhere(a));
+  const orFamily = `(${conds.join(' OR ')})`;
+  const finalWhere = [orFamily, ...commonFilters].join(' AND ');
+
+  const rows = await this.lp.cargoQueryAll<{ Team: string }>({
+    tables: 'ScoreboardPlayers=SP,Tournaments=T',
+    joinOn: 'SP.OverviewPage=T.OverviewPage',
+    fields: 'SP.Team',
+    where: finalWhere,
+    groupBy: 'SP.Team',
+    orderBy: 'SP.Team ASC',
+    limit: 500,
+  });
+  return rows.map(r => r.Team).filter(Boolean);
   }
 
 
@@ -100,8 +151,6 @@ export class LeaguepediaTeamsService {
   /**
    * Descubre equipos que jugaron en una liga y los inserta/actualiza con catálogo + logos.
    */
-  
-
   async upsertTeamsByLeagueNameLike(leagueCodeOrLike: string, from?: string, to?: string) {
   const names = await this.listTeamsPlayedInLeague(leagueCodeOrLike, from, to);
   if (!names.length) return { discovered: 0, enriched: 0, upserts: 0 };

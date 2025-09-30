@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { LeaguepediaClient } from './leaguepedia.client';
 import { CargoResponse, LpGameRow, LpPlayerGameStatRow, LpTournamentRow } from './dto/cargo.dto';
-import { buildLeagueWhere, leagueAliases, normalizeRole, toBoolYN, toInt, toUtcDate } from './leaguepedia.helpers';
+import { buildLeagueWhere, leagueAliases, looksLikeLeagueIconKey, normalizeRole, toBoolYN, toInt, toUtcDate } from './leaguepedia.helpers';
 import { Tournament } from '../entities/tournament.entity';
 import { Game } from '../entities/game.entity';
 import { Player } from '../entities/player.entity';
@@ -611,33 +611,76 @@ private deriveLeagueCodeNameRegion(
  * Devuelve los PlayerPage (SP.Link) DISTINCT que han jugado en una liga (por nombre)
  * en un rango de fechas. Puedes añadir IsOfficial="1" si quieres filtrar.
  */
-async fetchDistinctPlayerPagesByLeagueNameLike(
-  leagueNameLike: string,
-  from: string,
-  to: string,
-  officialOnly?: boolean,
-): Promise<string[]> {
-  const aliases = leagueAliases(leagueNameLike);
-  const conds = aliases.map(a => buildLeagueWhere(a));
-  const where: string[] = [
-    `(${conds.join(' OR ')})`,
-    `SP.DateTime_UTC >= "${from}"`,
-    `SP.DateTime_UTC <= "${to}"`,
-  ];
-  if (officialOnly != null) where.push(`T.IsOfficial="${officialOnly ? '1' : '0'}"`);
 
-  const rows = await this.lp.cargoQueryAll<{ PlayerPage: string }>({
-    tables: 'ScoreboardPlayers=SP,Tournaments=T',
-    joinOn: 'SP.OverviewPage=T.OverviewPage',
-    fields: 'SP.Link=PlayerPage',
-    where: where.join(' AND '),
-    groupBy: 'SP.Link',
-    orderBy: 'SP.Link ASC',
-    limit: 500,
-  });
+  async fetchDistinctPlayerPagesByLeagueNameLike(
+    leagueNameLike: string,
+    from: string,
+    to: string,
+    officialOnly?: boolean,
+  ): Promise<string[]> {
+    const aliases = leagueAliases(leagueNameLike);
 
-  return rows.map(r => r.PlayerPage).filter(Boolean);
-}
+    // Filtros anti-ruido comunes
+    const commonFilters: string[] = [
+      `SP.Link IS NOT NULL`,
+      `(T.TournamentLevel="Primary" OR T.TournamentLevel IS NULL)`,
+      `T.League NOT LIKE "%Challenger%"`,
+      `T.Name   NOT LIKE "%Challenger%"`,
+      `T.League NOT LIKE "%Challengers%"`,
+      `T.Name   NOT LIKE "%Challengers%"`,
+      `T.League NOT LIKE "%Academy%"`,
+      `T.Name   NOT LIKE "%Academy%"`,
+      `T.League NOT LIKE "%LDL%"`,
+      `T.Name   NOT LIKE "%LDL%"`,
+      `SP.DateTime_UTC >= "${from}"`,
+      `SP.DateTime_UTC <= "${to}"`,
+    ];
+    // IsOfficial: si te lo pasan explícitamente, respétalo; si no, aplica "1" por defecto (opcional)
+    if (officialOnly != null) {
+      commonFilters.push(`T.IsOfficial="${officialOnly ? '1' : '0'}"`);
+    } else {
+      commonFilters.push(`T.IsOfficial="1"`);
+    }
+
+    // Intento LeagueIconKey primero si procede
+    const tryIconKey = looksLikeLeagueIconKey(leagueNameLike);
+    if (tryIconKey) {
+      const iconKey = leagueNameLike.trim();
+      const iconWhere = [`T.LeagueIconKey="${iconKey}"`, ...commonFilters].join(' AND ');
+      try {
+        const rowsIcon = await this.lp.cargoQueryAll<{ PlayerPage: string }>({
+          tables: 'ScoreboardPlayers=SP,Tournaments=T',
+          joinOn: 'SP.OverviewPage=T.OverviewPage',
+          fields: 'SP.Link=PlayerPage',
+          where: iconWhere,
+          groupBy: 'SP.Link',
+          orderBy: 'SP.Link ASC',
+          limit: 500,
+        });
+        if (rowsIcon?.length) return rowsIcon.map(r => r.PlayerPage).filter(Boolean);
+      } catch {
+        // Fallback si el campo no existe
+      }
+    }
+
+    // Fallback: OR de alias (siglas + nombre largo + literal)
+    const conds = aliases.map(a => buildLeagueWhere(a));
+    const orFamily = `(${conds.join(' OR ')})`;
+    const finalWhere = [orFamily, ...commonFilters].join(' AND ');
+
+    const rows = await this.lp.cargoQueryAll<{ PlayerPage: string }>({
+      tables: 'ScoreboardPlayers=SP,Tournaments=T',
+      joinOn: 'SP.OverviewPage=T.OverviewPage',
+      fields: 'SP.Link=PlayerPage',
+      where: finalWhere,
+      groupBy: 'SP.Link',
+      orderBy: 'SP.Link ASC',
+      limit: 500,
+    });
+
+    return rows.map(r => r.PlayerPage).filter(Boolean);
+  }
+
 
 /**
  * Upsert de catálogo de jugadores (Players.*) para todos los PlayerPage encontrados

@@ -12,7 +12,7 @@ export class LeaguepediaController {
   // --- Tournaments ---
   @Get('tournaments')
   async tournaments(
-    @Query('nameLike') nameLike: string = 'LEC',
+    @Query('nameLike') nameLike: string,
     @Query('year') year?: string,
     @Query('official') official?: '0' | '1',
     @Query('ingest') ingest?: '0' | '1',
@@ -31,7 +31,7 @@ export class LeaguepediaController {
   // --- Teams (descubrir por liga) ---
   @Get('teams')
   async teams(
-    @Query('leagueLike') leagueLike: string = 'LEC',
+    @Query('leagueLike') leagueLike: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('ingest') ingest?: '0' | '1',
@@ -47,7 +47,7 @@ export class LeaguepediaController {
   // --- Games ---
   @Get('games')
   async games(
-    @Query('leagueLike') leagueLike: string = 'LEC',
+    @Query('leagueLike') leagueLike: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('ingest') ingest?: '0' | '1',
@@ -70,7 +70,7 @@ export class LeaguepediaController {
   // --- Player Stats ---
   @Get('playerstats')
   async playerStats(
-    @Query('leagueLike') leagueLike: string = 'LEC',
+    @Query('leagueLike') leagueLike: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('ingest') ingest?: '0' | '1',
@@ -120,7 +120,7 @@ export class LeaguepediaController {
   // --- Players (descubrir todos los jugadores que jugaron en la liga) ---
   @Get('players')
   async players(
-    @Query('leagueLike') leagueLike: string = 'LEC',
+    @Query('leagueLike') leagueLike: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('official') official?: '0' | '1',
