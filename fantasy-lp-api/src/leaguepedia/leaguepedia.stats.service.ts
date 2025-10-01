@@ -96,33 +96,126 @@ export class LeaguepediaStatsService {
   }
 
   // ------------------ Games ------------------
+  // Quita tildes, signos de puntuación comunes, espacios duplicados, y baja a minúsculas.
+  
+private normalizeTeamLabel(s: string | null | undefined): string {
+  if (!s) return '';
+  const base = s
+    .normalize('NFKD') // separa acentos
+    .replace(/[\u0300-\u036f]/g, '') // quita diacríticos
+    .replace(/[’'`"]/g, '') // comillas
+    .replace(/[.]/g, '') // puntos
+    .replace(/-/g, ' ') // guiones por espacio
+    .replace(/\s+/g, ' ') // espacios múltiples
+    .trim()
+    .toLowerCase();
 
-  async fetchGamesByLeagueNameLike(leagueNameLike: string, from?: string, to?: string): Promise<LpGameRow[]> {
+  // Elimina sufijos tipo ".CN", ".KR" al final del nombre (caso NIP.CN)
+  return base.replace(/\.[a-z]{2,3}$/, '');
+}
+
+private buildTeamIndex(teams: Array<{
+  id: number;
+  teamName: string | null;
+  short: string | null;
+  leaguepediaTeamPage: string | null;
+  region?: string | null;
+}>): {
+  byLabel: Map<string, number[]>;
+  byRegion: Map<number, string | null | undefined>;
+} {
+  const byLabel = new Map<string, number[]>();
+  const byRegion = new Map<number, string | null | undefined>();
+
+  const add = (label: string | null | undefined, teamId: number) => {
+    const norm = this.normalizeTeamLabel(label);
+    if (!norm) return;
+    const arr = byLabel.get(norm) ?? [];
+    if (!arr.includes(teamId)) arr.push(teamId);
+    byLabel.set(norm, arr);
+  };
+
+  for (const t of teams) {
+    byRegion.set(t.id, (t as any).region ?? null);
+    // Alias principales:
+    add(t.teamName, t.id);
+    add(t.short, t.id);
+
+    // También usa la OverviewPage como alias (con y sin underscores)
+    if (t.leaguepediaTeamPage) {
+      add(t.leaguepediaTeamPage, t.id);
+      add(t.leaguepediaTeamPage.replace(/_/g, ' '), t.id);
+    }
+
+    // Variante sin sufijo regional si el teamName trajera "Xxx.CN"
+    if (t.teamName && /\.[A-Za-z]{2,3}$/.test(t.teamName)) {
+      add(t.teamName.replace(/\.[A-Za-z]{2,3}$/, ''), t.id);
+    }
+  }
+
+  return { byLabel, byRegion };
+}
+
+  private resolveTeamId(
+    label: string | null | undefined,
+    index: { byLabel: Map<string, number[]>; byRegion: Map<number, string | null | undefined> },
+    hintRegion?: string | null // p.ej., 'CN', 'KR', 'EMEA'
+  ): number | null {
+    const norm = this.normalizeTeamLabel(label);
+    if (!norm) return null;
+
+    const candidates = index.byLabel.get(norm);
+    if (!candidates || candidates.length === 0) return null;
+    if (candidates.length === 1) return candidates[0];
+
+    // Si hay varios, intenta desempatar por región si tenemos hintRegion
+    if (hintRegion) {
+      const c = candidates.find(id => {
+        const r = index.byRegion.get(id);
+        return r && r.toLowerCase().includes(hintRegion.toLowerCase());
+      });
+      if (c) return c;
+    }
+
+    // Si no hay región o no desempata, devuelve el primero y loguea
+    this.logger?.warn?.(`[Leaguepedia] Ambiguo team label "${label}" -> ids=[${candidates.join(',')}] (devuelvo el primero)`);
+    return candidates[0];
+  }
+
+  async fetchGamesByLeagueNameLike(
+    leagueNameLike: string,
+    from?: string,
+    to?: string,
+  ): Promise<LpGameRow[]> {
+    // 👇 Incluimos siempre el filtro de nivel "Primary"
     const common = [
+      `T.TournamentLevel="Primary"`,
       from ? `SG.DateTime_UTC >= "${from}"` : null,
       to   ? `SG.DateTime_UTC <= "${to}"`   : null,
     ].filter(Boolean).join(' AND ');
 
     const makeWhere = (cond: string) => common ? `${cond} AND ${common}` : cond;
 
-    // 1) Por nombre del torneo
+    // 1) Por nombre del torneo (LIKE sobre T.Name)
     let rows = await this.lp.cargoQueryAll<LpGameRow>({
       tables: 'ScoreboardGames=SG,Tournaments=T',
       joinOn: 'SG.OverviewPage=T.OverviewPage',
       fields:
-        'SG.GameId=GameId,SG.DateTime_UTC=DateTimeUTC,SG.Team1,SG.Team2,SG.WinTeam,SG.LossTeam,SG.Winner,SG.Patch,SG.OverviewPage=OverviewPage,T.Name=Tournament',
+        'SG.GameId=GameId,SG.DateTime_UTC=DateTimeUTC,SG.Team1,SG.Team2,SG.WinTeam,SG.LossTeam,' +
+        'SG.Winner,SG.Patch,SG.OverviewPage=OverviewPage,T.Name=Tournament',
       where: makeWhere(`T.Name LIKE "%${leagueNameLike}%"`),
       orderBy: 'SG.DateTime_UTC ASC',
       limit: 500,
     });
 
-    // 2) Fallback por League (p.ej. "League of Legends Champions Korea")
+    // 2) Fallback por League
     if (!rows.length) {
       rows = await this.lp.cargoQueryAll<LpGameRow>({
         tables: 'ScoreboardGames=SG,Tournaments=T',
         joinOn: 'SG.OverviewPage=T.OverviewPage',
         fields:
-          'SG.GameId=GameId,SG.DateTime_UTC=DateTimeUTC,SG.Team1,SG.Team2,SG.WinTeam,SG.LossTeam,SG.Winner,SG.Patch,SG.OverviewPage=OverviewPage,T.Name=Tournament',
+          'SG.GameId=GameId,SG.DateTime_UTC=DateTimeUTC,SG.Team1,SG.Team2,SG.WinTeam,SG.LossTeam,' +
+          'SG.Winner,SG.Patch,SG.OverviewPage=OverviewPage,T.Name=Tournament',
         where: makeWhere(`T.League LIKE "%${leagueNameLike}%"`),
         orderBy: 'SG.DateTime_UTC ASC',
         limit: 500,
@@ -134,24 +227,56 @@ export class LeaguepediaStatsService {
   async upsertGames(rows: LpGameRow[]) {
     if (!rows.length) return 0;
 
-    // Pre-resuelve tournaments (OverviewPage → id)
+    // 0) Pre-resuelve tournaments (OverviewPage → id) como ya hacías
     const overviews = Array.from(new Set(rows.map(r => r.OverviewPage).filter(Boolean))) as string[];
     const tournaments = overviews.length
       ? await this.tournamentRepo.find({ where: { overviewPage: In(overviews) } })
       : [];
 
-    const tourIndex = new Map<string, number>();
-    for (const t of tournaments) tourIndex.set(t.overviewPage.toLowerCase(), t.id);
+    const tourIndex = new Map<string, { id: number; region?: string | null }>();
+    for (const t of tournaments) {
+      // Si tu tabla tournament tiene region, perfecto; si no, lo dejamos undefined
+      tourIndex.set(t.overviewPage.toLowerCase(), { id: t.id, region: (t as any).region ?? null });
+    }
+
+    // 1) Carga todos los equipos una vez y crea el índice de resolución
+    const allTeams = await this.teamRepo.find({
+      select: ['id', 'teamName', 'short', 'leaguepediaTeamPage', 'region'] as any,
+    });
+    const teamIndex = this.buildTeamIndex(allTeams);
 
     let count = 0;
     for (const g of rows) {
-      const tId = g.OverviewPage ? tourIndex.get(g.OverviewPage.toLowerCase()) ?? null : null;
+      const tMeta = g.OverviewPage ? tourIndex.get(g.OverviewPage.toLowerCase()) : undefined;
+      const tId = tMeta?.id ?? null;
+      const hintRegion = tMeta?.region ?? (g as any).Region ?? null; // usa región del torneo si la tienes
+
+      // --- Resolver IDs de equipos ---
+      // Preferimos WinTeam textual; si no, derivamos del Winner (1/2)
+      const winnerText = g.WinTeam ?? (g.Winner === '1' ? g.Team1 : g.Winner === '2' ? g.Team2 : null);
+
+      const team1Id = this.resolveTeamId(g.Team1, teamIndex, hintRegion);
+      const team2Id = this.resolveTeamId(g.Team2, teamIndex, hintRegion);
+      const winnerTeamId = this.resolveTeamId(winnerText, teamIndex, hintRegion);
+
+      // Logging opcional para ver misses puntuales
+      if (!team1Id || !team2Id || (!winnerTeamId && winnerText)) {
+        this.logger?.warn?.(
+          `[Leaguepedia] game ${g.GameId} team map: ` +
+          `T1="${g.Team1}"->${team1Id ?? 'NULL'}, ` +
+          `T2="${g.Team2}"->${team2Id ?? 'NULL'}, ` +
+          `WIN="${winnerText}"->${winnerTeamId ?? 'NULL'}`
+        );
+      }
 
       await this.gameRepo.query(
         `
-        INSERT INTO game (leaguepedia_game_id, datetime_utc, tournament_id, tournament_name, overview_page, patch,
-                          team1_text, team2_text, win_team_text, loss_team_text, winner_number)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        INSERT INTO game (
+          leaguepedia_game_id, datetime_utc, tournament_id, tournament_name, overview_page, patch,
+          team1_text, team2_text, win_team_text, loss_team_text, winner_number,
+          team1_id, team2_id, winner_team_id
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
         ON CONFLICT (leaguepedia_game_id) DO UPDATE SET
           datetime_utc = EXCLUDED.datetime_utc,
           tournament_id = EXCLUDED.tournament_id,
@@ -162,7 +287,10 @@ export class LeaguepediaStatsService {
           team2_text = EXCLUDED.team2_text,
           win_team_text = EXCLUDED.win_team_text,
           loss_team_text = EXCLUDED.loss_team_text,
-          winner_number = EXCLUDED.winner_number
+          winner_number = EXCLUDED.winner_number,
+          team1_id = EXCLUDED.team1_id,
+          team2_id = EXCLUDED.team2_id,
+          winner_team_id = EXCLUDED.winner_team_id
         `,
         [
           g.GameId,
@@ -176,6 +304,9 @@ export class LeaguepediaStatsService {
           g.WinTeam ?? null,
           g.LossTeam ?? null,
           g.Winner ? Number(g.Winner) : null,
+          team1Id,
+          team2Id,
+          winnerTeamId,
         ],
       );
       count++;
