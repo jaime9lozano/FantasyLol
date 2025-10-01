@@ -610,13 +610,47 @@ private deriveLeagueCodeNameRegion(
    * desde una fecha (inclusive).
    */
   async fetchRosterWindow(teamName: string, sinceUtc: string) {
+    // Busca primero el equipo en tu tabla para construir alias
+    const team = await this.teamRepo
+      .createQueryBuilder('t')
+      .where('LOWER(t.team_name) = LOWER(:n) OR LOWER(t.leaguepedia_team_page) = LOWER(:n)', { n: teamName })
+      .getOne();
+
+    // Si no encontramos el equipo en tu DB, aún así intentamos con el label pasado
+    const candidates = team ? this.buildRosterTeamLabels(team) : [teamName];
+
+    // Construye el WHERE (SP.Team IN (...)) + filtros anti-ruido + ventana temporal
+    const teamOrs = candidates.map(lbl => `SP.Team=${this.qstr(lbl)}`).join(' OR ');
+    const where = [
+      `(${teamOrs})`,
+      `SP.DateTime_UTC >= ${this.qstr(sinceUtc)}`,
+      // Filtros “buenos”
+      `T.IsOfficial="1"`,
+      `(T.TournamentLevel="Primary" OR T.TournamentLevel IS NULL)`,
+      `T.League NOT LIKE "%Challenger%"`,
+      `T.Name   NOT LIKE "%Challenger%"`,
+      `T.League NOT LIKE "%Challengers%"`,
+      `T.Name   NOT LIKE "%Challengers%"`,
+      `T.League NOT LIKE "%Academy%"`,
+      `T.Name   NOT LIKE "%Academy%"`,
+      `T.League NOT LIKE "%LDL%"`,
+      `T.Name   NOT LIKE "%LDL%"`,
+    ].join(' AND ');
+
     const rows = await this.lp.cargoQueryAll<LpPlayerGameStatRow>({
-      tables: 'ScoreboardPlayers=SP',
+      tables: 'ScoreboardPlayers=SP,Tournaments=T',
+      joinOn: 'SP.OverviewPage=T.OverviewPage',
       fields: 'SP.Team=Team,SP.Link=PlayerPage,SP.Role=Role,SP.DateTime_UTC=DateTimeUTC,SP.GameId',
-      where: `SP.Team="${teamName}" AND SP.DateTime_UTC >= "${sinceUtc}"`,
-      orderBy: 'SP.DateTime_UTC DESC',
-      limit: 500,
+      where,
+      orderBy: 'SP.DateTime_UTC DESC, SP.GameId DESC, SP.Link ASC',
+      limit: 2000,
     });
+
+    // Telemetría útil si viniera vacío
+    if (!rows.length) {
+      this.logger?.warn?.(`[RosterWindow] Sin filas para "${teamName}". Probé labels: ${candidates.join(' | ')}`);
+    }
+
     return rows;
   }
 
@@ -663,6 +697,70 @@ private deriveLeagueCodeNameRegion(
    * Aplica la derivación de roster a la BD: marca titulares/suplentes,
    * con protección: si derivedCount=0, no desactiva nada.
    */
+  private escapeCargo(s: string): string {
+    return s.replace(/"/g, '\\"');
+  }
+  private qstr(s: string): string {
+    return `"${this.escapeCargo(s)}"`;
+  }
+
+  /** Normaliza un label de equipo a una forma comparables (case/acentos/puntuación). */
+  private normalizeLabel(s?: string | null): string {
+    if (!s) return '';
+    return s
+      .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')   // sin acentos
+      .replace(/[’'`"]/g, '')                             // sin comillas
+      .replace(/[.]/g, '')                                // sin puntos
+      .replace(/-/g, ' ')                                 // guiones -> espacio
+      .replace(/\s+/g, ' ')                               // espacios múltiples
+      .trim().toLowerCase();
+  }
+
+  /** Genera alias probables de SP.Team para un equipo de tu tabla. */
+  private buildRosterTeamLabels(team: { teamName?: string|null; short?: string|null; leaguepediaTeamPage?: string|null; region?: string|null }): string[] {
+    const set = new Set<string>();
+
+    const push = (s?: string | null) => { if (s && s.trim()) set.add(s.trim()); };
+
+    // 1) Nombre y short
+    push(team.teamName);
+    push(team.short);
+
+    // 2) OverviewPage: con y sin underscores
+    if (team.leaguepediaTeamPage) {
+      push(team.leaguepediaTeamPage);
+      push(team.leaguepediaTeamPage.replace(/_/g, ' '));
+    }
+
+    // 3) Variante con/ sin sufijo regional (.CN/.KR/...)
+    //    Si el nombre trae sufijo, añade la variante sin él; si no lo trae y sabemos región, añade la con sufijo.
+    const addSuffixVariant = (label: string) => {
+      // Si ya tiene .XX al final, añade sin sufijo
+      if (/\.[A-Za-z]{2,3}$/.test(label)) {
+        push(label.replace(/\.[A-Za-z]{2,3}$/, ''));
+      } else {
+        const reg = (team.region || '').toUpperCase();
+        const suffix = reg.includes('CHINA') || reg === 'CN' ? '.CN'
+                    : reg.includes('KOREA') || reg === 'KR' ? '.KR'
+                    : reg.includes('EMEA')  || reg === 'EU' ? ''    // LEC no usa sufijo fijo
+                    : '';
+        if (suffix) push(`${label}${suffix}`);
+      }
+    };
+
+    // Aplica la lógica de sufijos a los labels más “largos”
+    Array.from(set).forEach(lbl => addSuffixVariant(lbl));
+
+    // 4) Limpieza: quita vacíos y duplicados por normalización
+    const byNorm = new Map<string,string>();
+    for (const lbl of set) {
+      const n = this.normalizeLabel(lbl);
+      if (n && !byNorm.has(n)) byNorm.set(n, lbl);
+    }
+    return Array.from(byNorm.values());
+  }
+
+
   async recomputeCurrentRosterForTeam(teamName: string, sinceUtc: string, minGames = 2) {
     const rows = await this.fetchRosterWindow(teamName, sinceUtc);
     const { starters, countsFlat, lastSeen, involvedPlayers } = this.deriveStarters(rows, minGames);
@@ -918,12 +1016,6 @@ async upsertPlayersByLeagueNameLike(
   }
   return { discovered: pages.length, enriched: enriched.length, upserts };
 }
-
-  // Util para escapar comillas
-  private escapeCargo(s: string): string {
-    return s.replace(/"/g, '\\"');
-  }
-
   private async fetchPlayerFromPlayersTable(page: string): Promise<{ PlayerPage: string; DisplayName?: string; Country?: string; PhotoFile?: string } | null> {
     const esc = (s: string) => `"${this.escapeCargo(s)}"`;
 
