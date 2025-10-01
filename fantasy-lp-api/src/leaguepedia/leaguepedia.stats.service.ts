@@ -422,64 +422,80 @@ private deriveLeagueCodeNameRegion(
 
 
   // ------------------ Player Stats ------------------
+  // Utils locales
   async fetchPlayerStatsByLeagueNameLike(
     leagueNameLike: string,
     from: string,
     to: string,
+    officialOnly: boolean = true,  
+    primaryOnly: boolean = true, 
   ): Promise<LpPlayerGameStatRow[]> {
+    
+    const escapeCargo = (s: string) => s.replace(/"/g, '\\"');
+    const qstr  = (s: string) => `"${escapeCargo(s)}"`;
+    const like  = (s: string) => `"%${escapeCargo(s)}%"`;
+
     const fields =
       'SP.Link=PlayerPage,SP.Team=Team,SP.Role=Role,' +
       'SP.Kills,SP.Deaths,SP.Assists,SP.Gold,SP.CS,SP.Champion,' +
       'SP.DateTime_UTC=DateTimeUTC,SP.GameId,SP.PlayerWin';
 
-    // 1) Intento por T.Name (ej. "LEC 2025 Summer ...")
-    const whereByName = [
-      `T.Name LIKE "%${leagueNameLike}%"`,
-      `SP.DateTime_UTC >= "${from}"`,
-      `SP.DateTime_UTC <= "${to}"`,
-    ].join(' AND ');
+    // Filtros comunes anti ruido
+    const common: string[] = [
+      'SP.Link IS NOT NULL',
+      `SP.DateTime_UTC >= ${qstr(from)}`,
+      `SP.DateTime_UTC <= ${qstr(to)}`,
+    ];
 
-    let rows = await this.lp.cargoQueryAll<LpPlayerGameStatRow>({
+    // IsOfficial: si te lo pasan explícitamente, respétalo; si no, "1" por defecto
+    if (officialOnly != null) common.push(`T.IsOfficial=${qstr(officialOnly ? '1' : '0')}`);
+    else common.push(`T.IsOfficial="1"`);
+
+    // Solo torneos principales
+    if (primaryOnly === true) {
+      common.push(`T.TournamentLevel="Primary"`);
+      // Si tu wiki deja NULL algunos splits principales, puedes usar la versión laxa:
+      // common.push(`(T.TournamentLevel="Primary" OR T.TournamentLevel IS NULL)`);
+    }
+
+    // Excluye challengers/academy/LDL
+    common.push(
+      `T.League NOT LIKE "%Challenger%"`,
+      `T.Name   NOT LIKE "%Challenger%"`,
+      `T.League NOT LIKE "%Challengers%"`,
+      `T.Name   NOT LIKE "%Challengers%"`,
+      `T.League NOT LIKE "%Academy%"`,
+      `T.Name   NOT LIKE "%Academy%"`,
+      `T.League NOT LIKE "%LDL%"`,
+      `T.Name   NOT LIKE "%LDL%"`
+    );
+
+    // Evita colisión LPLOL cuando buscas LPL (por el LIKE ingenuo)
+    const key = leagueNameLike.trim().toUpperCase();
+    const isLPL = /\bLPL\b/.test(key) || key.startsWith('LPL');
+    if (isLPL) {
+      common.push(`T.Name NOT LIKE "%LPLOL%"`, `T.League NOT LIKE "%LPLOL%"`);
+    }
+
+    // WHERE por LeagueIconKey o por aliases de liga (LEC/LCK/LPL)
+    let where: string;
+    if (looksLikeLeagueIconKey(leagueNameLike)) {
+      // Ej.: LCK21, LPL2020, LEC2025...
+      where = [`T.LeagueIconKey=${qstr(leagueNameLike.trim())}`, ...common].join(' AND ');
+    } else {
+      const conds = leagueAliases(leagueNameLike).map(a => buildLeagueWhere(a)); // (T.Name LIKE "%..." OR T.League LIKE "%...")
+      const orFamily = `(${conds.join(' OR ')})`;
+      where = [orFamily, ...common].join(' AND ');
+    }
+
+    const rows = await this.lp.cargoQueryAll<LpPlayerGameStatRow>({
       tables: 'ScoreboardPlayers=SP,Tournaments=T',
       joinOn: 'SP.OverviewPage=T.OverviewPage',
       fields,
-      where: whereByName,
-      limit: 500,
+      where,
+      orderBy: 'SP.DateTime_UTC ASC, SP.GameId ASC, SP.Link ASC',
+      limit: 2000, // ajusta si necesitas más
     });
-
-    // 2) Si no hay filas, probar por T.League (ej. "LoL EMEA Championship")
-    if (!rows.length) {
-      const whereByLeague = [
-        `T.League LIKE "%${leagueNameLike}%"`,
-        `SP.DateTime_UTC >= "${from}"`,
-        `SP.DateTime_UTC <= "${to}"`,
-      ].join(' AND ');
-
-      rows = await this.lp.cargoQueryAll<LpPlayerGameStatRow>({
-        tables: 'ScoreboardPlayers=SP,Tournaments=T',
-        joinOn: 'SP.OverviewPage=T.OverviewPage',
-        fields,
-        where: whereByLeague,
-        limit: 500,
-      });
-    }
-
-    // 3) Caso especial LEC 2025 → League = 'LoL EMEA Championship'
-    if (!rows.length && leagueNameLike.toUpperCase() === 'LEC') {
-      const whereLEC = [
-        `T.League IN ("LEC","LoL EMEA Championship")`,
-        `SP.DateTime_UTC >= "${from}"`,
-        `SP.DateTime_UTC <= "${to}"`,
-      ].join(' AND ');
-
-      rows = await this.lp.cargoQueryAll<LpPlayerGameStatRow>({
-        tables: 'ScoreboardPlayers=SP,Tournaments=T',
-        joinOn: 'SP.OverviewPage=T.OverviewPage',
-        fields,
-        where: whereLEC,
-        limit: 500,
-      });
-    }
 
     return rows;
   }
@@ -489,7 +505,6 @@ private deriveLeagueCodeNameRegion(
 
     // Pre-resuelve game.id por leaguepedia_game_id
     const gameIds = Array.from(new Set(rows.map(r => r.GameId)));
-    const games = await this.gameRepo.find({ where: {} }); // evitamos IN masivo en ORM, resolvemos con query directa
     const gameIndex = new Map<string, number>();
     // Mejor: query directa
     const gameRows = await this.gameRepo.query(
@@ -506,10 +521,6 @@ private deriveLeagueCodeNameRegion(
     );
     const playerIndex = new Map<string, number>();
     for (const p of playerRows) playerIndex.set((p.leaguepedia_player_id as string).toLowerCase(), p.id);
-
-    // También resolvemos role.id por code normalizado (si quieres usarlo en roster luego)
-    const roles = await this.roleRepo.find();
-    const roleCodeToId = new Map(roles.map(r => [r.code, r.id]));
 
     let count = 0;
     for (const s of rows) {
