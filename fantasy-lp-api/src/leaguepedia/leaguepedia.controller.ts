@@ -15,17 +15,25 @@ export class LeaguepediaController {
     @Query('nameLike') nameLike: string,
     @Query('year') year?: string,
     @Query('official') official?: '0' | '1',
+    @Query('primary') primary?: '0' | '1',          
     @Query('ingest') ingest?: '0' | '1',
   ) {
     const officialOnly = official != null ? official === '1' : undefined;
+    const primaryOnly  = primary  != null ? primary  === '1' : undefined; 
     const y = year ? Number(year) : undefined;
 
-    const rows = await this.statsSvc.fetchTournamentsByNameLike(nameLike, y, officialOnly);
+    const rows = await this.statsSvc.fetchTournamentsByNameLike(
+      nameLike,
+      y,
+      officialOnly,
+      primaryOnly,                                    
+    );
+
     if (ingest === '1') {
       const n = await this.statsSvc.upsertTournaments(rows);
-      return { action: 'upsertTournaments', nameLike, year: y, officialOnly, upserts: n };
+      return { action: 'upsertTournaments', nameLike, year: y, officialOnly, primaryOnly, upserts: n };
     }
-    return { nameLike, year: y, officialOnly, rows };
+    return { nameLike, year: y, officialOnly, primaryOnly, rows };
   }
 
   // --- Teams (descubrir por liga) ---

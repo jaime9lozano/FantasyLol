@@ -16,6 +16,73 @@ export class LeaguepediaTeamsService {
     @InjectRepository(Team) private readonly teamRepo: Repository<Team>,
   ) {}
 
+  // Helper para poner bien league_id
+  private async resolveLeagueId(
+    leagueCodeOrLike: string,
+    from?: string,
+    to?: string,
+  ): Promise<number | null> {
+    const mgr = this.teamRepo.manager;
+    const raw = leagueCodeOrLike.trim();
+    // Base: letras (LPL, LCK, etc.)
+    const baseCode = raw.replace(/[0-9]/g, '').toUpperCase();
+
+    // 0) Intento exacto por code (por si ya nos pasan 'LPL2020' o 'LPL')
+    let row = await mgr.query(
+      'SELECT id, code FROM league WHERE LOWER(code)=LOWER($1) LIMIT 1',
+      [raw],
+    );
+    if (row?.[0]?.id) return row[0].id;
+
+    // 1) Si from/to son del mismo año, probamos base + año (p. ej. 'LPL2025')
+    let year: number | undefined;
+    if (from && to) {
+      // asume 'YYYY-MM-DD HH:mm:SS' en UTC
+      const yf = new Date(from.replace(' ', 'T') + 'Z');
+      const yt = new Date(to.replace(' ', 'T') + 'Z');
+      if (!isNaN(yf.getTime()) && !isNaN(yt.getTime()) && yf.getUTCFullYear() === yt.getUTCFullYear()) {
+        year = yf.getUTCFullYear();
+      }
+    }
+    if (year) {
+      row = await mgr.query(
+        'SELECT id, code FROM league WHERE LOWER(code)=LOWER($1) LIMIT 1',
+        [`${baseCode}${year}`],
+      );
+      if (row?.[0]?.id) return row[0].id;
+    }
+
+    // 2) Última oficial más "reciente" cuyo code empiece por base (LPL%)
+    //   Ordena por la parte numérica descendente (NULLS LAST para códigos sin números)
+    row = await mgr.query(
+      `
+      SELECT id, code
+      FROM league
+      WHERE is_official = TRUE
+        AND code ILIKE $1
+      ORDER BY NULLIF(regexp_replace(code, '\\D', '', 'g'), '')::int DESC NULLS LAST
+      LIMIT 1
+      `,
+      [`${baseCode}%`],
+    );
+    if (row?.[0]?.id) return row[0].id;
+
+    // 3) Por nombre o code aproximado (cubre casos como "Tencent LoL Pro League")
+    row = await mgr.query(
+      `
+      SELECT id, code
+      FROM league
+      WHERE is_official = TRUE
+        AND (name ILIKE $1 OR code ILIKE $2)
+      LIMIT 1
+      `,
+      [`%${baseCode}%`, `%${baseCode}%`],
+    );
+    if (row?.[0]?.id) return row[0].id;
+
+    return null;
+  }
+
   /**
    * Devuelve la lista DISTINCT de Team (nombres) que han jugado en una liga
    * filtrando por nombre de torneo (T.Name LIKE "%...%") y rango (opcional).
@@ -94,14 +161,57 @@ export class LeaguepediaTeamsService {
   /**
    * Enriquecimiento del equipo por catálogo (tabla Teams).
    */
+  private escapeCargo(s: string): string {
+    return s.replace(/"/g, '\\"');
+  }
+
   async fetchTeamCatalogByName(teamName: string): Promise<LpTeamRow | null> {
-    const res = await this.lp.cargoQuery<CargoResponse<LpTeamRow>>({
-      tables: 'Teams',
-      fields: 'Teams.OverviewPage=TeamPage,Teams.Name=TeamName,Teams.Short=Short,Teams.Region=Region,Teams.Location=Location,Teams.Image=LogoFile',
-      where: `Teams.Name="${teamName}"`,
-      limit: 1,
-    });
-    return res?.cargoquery?.[0]?.title ?? null;
+    const q = (where: string) =>
+      this.lp.cargoQuery<CargoResponse<LpTeamRow>>({
+        tables: 'Teams',
+        fields:
+          'Teams.OverviewPage=TeamPage,Teams.Name=TeamName,Teams.Short=Short,Teams.Region=Region,Teams.Location=Location,Teams.Image=LogoFile',
+        where,
+        limit: 1,
+      });
+
+    const name = teamName.trim();
+    const esc = (s: string) => `"${this.escapeCargo(s)}"`;
+
+    // 1) Name exacto
+    let res = await q(`Teams.Name=${esc(name)}`);
+    if (res?.cargoquery?.[0]?.title) return res.cargoquery[0].title;
+
+    // 2) OverviewPage exacta (p. ej. "Ninjas in Pyjamas.CN")
+    res = await q(`Teams.OverviewPage=${esc(name)}`);
+    if (res?.cargoquery?.[0]?.title) return res.cargoquery[0].title;
+
+    // 3) OverviewPage con underscores (por si el nombre venía con espacios)
+    const pageUnderscore = name.replace(/ /g, '_');
+    if (pageUnderscore !== name) {
+      res = await q(`Teams.OverviewPage=${esc(pageUnderscore)}`);
+      if (res?.cargoquery?.[0]?.title) return res.cargoquery[0].title;
+    }
+
+    // 4) Si viene con sufijo ".XX" (".CN", ".BR", etc.), probamos el base
+    const m = name.match(/^(.*)\.[A-Za-z]{2,3}$/);
+    if (m) {
+      const base = m[1].trim();
+
+      // 4a) Name base exacto
+      res = await q(`Teams.Name=${esc(base)}`);
+      if (res?.cargoquery?.[0]?.title) return res.cargoquery[0].title;
+
+      // 4b) OverviewPage que empiece por el base (captura "Ninjas in Pyjamas.CN")
+      res = await q(`Teams.OverviewPage LIKE ${esc(`${base}%`)}`);
+      if (res?.cargoquery?.[0]?.title) return res.cargoquery[0].title;
+    }
+
+    // 5) Último recurso: Short exacto (si SP.Team fuera el tag)
+    res = await q(`Teams.Short=${esc(name)}`);
+    if (res?.cargoquery?.[0]?.title) return res.cargoquery[0].title;
+
+    return null;
   }
 
   /**
@@ -156,11 +266,7 @@ export class LeaguepediaTeamsService {
   if (!names.length) return { discovered: 0, enriched: 0, upserts: 0 };
 
   // Resuelve league_id por code (si existe)
-  const leagueCode = leagueCodeOrLike.toUpperCase();
-  const leagueRow = await this.teamRepo.manager.query(
-    'SELECT id FROM league WHERE LOWER(code)=LOWER($1) LIMIT 1', [leagueCode]
-  );
-  const leagueId: number | null = leagueRow?.[0]?.id ?? null;
+  const leagueId = await this.resolveLeagueId(leagueCodeOrLike, from, to);
 
   const enriched: LpTeamRow[] = [];
   for (const n of names) {

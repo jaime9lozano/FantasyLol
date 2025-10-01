@@ -28,16 +28,22 @@ export class LeaguepediaStatsService {
   ) {}
 
   // ------------------ Tournaments ------------------
-
-  async fetchTournamentsByNameLike(nameLike: string, year?: number, officialOnly?: boolean): Promise<LpTournamentRow[]> {
+  async fetchTournamentsByNameLike(nameLike: string, year?: number, officialOnly?: boolean, primaryOnly?: boolean): Promise<LpTournamentRow[]> {
     const where: string[] = [`Tournaments.Name LIKE "%${nameLike}%"`];
     if (year) where.push(`Tournaments.Year="${year}"`);
     if (officialOnly != null) where.push(`Tournaments.IsOfficial="${officialOnly ? '1' : '0'}"`);
+    if (primaryOnly === true) {
+      where.push(`Tournaments.TournamentLevel="Primary"`);
+    } else if (primaryOnly === false) {
+      // Opcional: si pones primary=0 y quieres EXCLUIR los Primary
+      where.push(`(Tournaments.TournamentLevel IS NULL OR Tournaments.TournamentLevel <> "Primary")`);
+    }
+
 
     const rows = await this.lp.cargoQueryAll<LpTournamentRow>({
       tables: 'Tournaments',
       fields:
-        'Tournaments.Name=Name,Tournaments.OverviewPage=OverviewPage,Tournaments.League=League,Tournaments.Region=Region,Tournaments.Year=Year,Tournaments.IsOfficial=IsOfficial,Tournaments.DateStart=DateStart,Tournaments.Date=Date,Tournaments.Split=Split,Tournaments.TournamentLevel=TournamentLevel,Tournaments.LeagueIconKey=LeagueIconKey',
+        'Tournaments.Name=Name,Tournaments.OverviewPage=OverviewPage,Tournaments.League=League,Tournaments.Region=Region,Tournaments.Year=Year,Tournaments.IsOfficial=IsOfficial, Tournaments.DateStart=DateStart,Tournaments.Date=Date,Tournaments.Split=Split,Tournaments.TournamentLevel=TournamentLevel,Tournaments.LeagueIconKey=LeagueIconKey',
       where: where.join(' AND '),
       orderBy: 'Tournaments.DateStart ASC',
       limit: 500,
@@ -696,28 +702,36 @@ async upsertPlayersByLeagueNameLike(
   if (!pages.length) return { discovered: 0, enriched: 0, upserts: 0 };
 
   // Para cada PlayerPage, pedimos su fila en Players
-  const enriched: { PlayerPage: string; DisplayName?: string; Country?: string; PhotoFile?: string }[] = [];
-  for (const page of pages) {
-    const res = await this.lp.cargoQuery<CargoResponse<{ PlayerPage: string; DisplayName?: string; Country?: string; PhotoFile?: string }>>({
-      tables: 'Players',
-      fields: 'Players.OverviewPage=PlayerPage,Players.ID=DisplayName,Players.NationalityPrimary=Country,Players.Image=PhotoFile',
-      where: `Players.OverviewPage="${page}"`,
-      limit: 1,
-    }) as any;
+    const enriched: { PlayerPage: string; DisplayName?: string; Country?: string; PhotoFile?: string }[] = [];
+    const misses: string[] = [];
 
-    const row = res?.cargoquery?.[0]?.title;
-    if (row?.PlayerPage) enriched.push(row);
-    await new Promise(r => setTimeout(r, 60)); // rate limit suave
-  }
+    for (const page of pages) {
+      // 1) Intenta sacar fila del cargo "Players" con fallbacks
+      const row = await this.fetchPlayerFromPlayersTable(page).catch(() => null);
 
-  // Resolver imágenes:
-  // - Primero, los PhotoFile (File:...) con imageinfo
-  const fileTitles = enriched.map(e => e.PhotoFile).filter(Boolean) as string[];
-  const imageMap = await this.lp.resolveImageUrls(fileTitles);
+      if (row?.PlayerPage) {
+        enriched.push(row);
+      } else {
+        // 2) Fallback "mínimo": usa el propio OverviewPage y ya resolveremos la foto por pageimages
+        enriched.push({
+          PlayerPage: page,
+          DisplayName: page.replace(/_/g, ' '), // nombre legible
+          Country: undefined,
+          PhotoFile: undefined,
+        });
+        misses.push(page);
+      }
+      await new Promise(r => setTimeout(r, 60)); // rate limit
+    }
 
-  // - Para los que no tengan PhotoFile, probamos pageimages (por PlayerPage)
-  const noFilePages = enriched.filter(e => !e.PhotoFile).map(e => e.PlayerPage);
-  const pageImageMap = await this.lp.resolvePageOriginalImages(noFilePages);
+    // Resolver imágenes (igual que ya hacías):
+    const fileTitles = enriched.map(e => e.PhotoFile).filter(Boolean) as string[];
+    const imageMap = await this.lp.resolveImageUrls(fileTitles);
+
+    // Para los que no tengan PhotoFile, probamos pageimages (por PlayerPage)
+    const noFilePages = enriched.filter(e => !e.PhotoFile).map(e => e.PlayerPage);
+    const pageImageMap = await this.lp.resolvePageOriginalImages(noFilePages);
+
 
   let upserts = 0;
   for (const e of enriched) {
@@ -760,7 +774,50 @@ async upsertPlayersByLeagueNameLike(
     }
     upserts++;
   }
-
   return { discovered: pages.length, enriched: enriched.length, upserts };
 }
+
+  // Util para escapar comillas
+  private escapeCargo(s: string): string {
+    return s.replace(/"/g, '\\"');
+  }
+
+  private async fetchPlayerFromPlayersTable(page: string): Promise<{ PlayerPage: string; DisplayName?: string; Country?: string; PhotoFile?: string } | null> {
+    const esc = (s: string) => `"${this.escapeCargo(s)}"`;
+
+    const q = (where: string) =>
+      this.lp.cargoQuery<CargoResponse<{ PlayerPage: string; DisplayName?: string; Country?: string; PhotoFile?: string }>>({
+        tables: 'Players',
+        fields: 'Players.OverviewPage=PlayerPage,Players.ID=DisplayName,Players.NationalityPrimary=Country,Players.Image=PhotoFile',
+        where,
+        limit: 1,
+      }) as any;
+
+    const name = page.trim();
+
+    // 1) OverviewPage exacto (tu intento actual)
+    let res = await q(`Players.OverviewPage=${esc(name)}`);
+    if (res?.cargoquery?.[0]?.title?.PlayerPage) return res.cargoquery[0].title;
+
+    // 2) OverviewPage con underscores (MediaWiki normaliza espacios a "_")
+    const withUnderscores = name.replace(/ /g, '_');
+    if (withUnderscores !== name) {
+      res = await q(`Players.OverviewPage=${esc(withUnderscores)}`);
+      if (res?.cargoquery?.[0]?.title?.PlayerPage) return res.cargoquery[0].title;
+    }
+
+    // 3) ID exacto (hay casos donde el ID coincide con el título del link)
+    res = await q(`Players.ID=${esc(name)}`);
+    if (res?.cargoquery?.[0]?.title?.PlayerPage) return res.cargoquery[0].title;
+
+    // 4) Desambiguaciones típicas: "Nombre (player)" / "Nombre (League of Legends player)" / región
+    //    Probamos OverviewPage que empiece por el nombre base
+    const base = name.replace(/_/g, ' ');
+    res = await q(`Players.OverviewPage LIKE ${esc(`${base}%`)}`);
+    if (res?.cargoquery?.[0]?.title?.PlayerPage) return res.cargoquery[0].title;
+
+    // Sin match en tabla Players
+    return null;
+  }
+
 }
