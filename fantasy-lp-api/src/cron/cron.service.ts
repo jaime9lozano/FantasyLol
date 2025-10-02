@@ -7,7 +7,6 @@ import { LeaguepediaTeamsService } from '../leaguepedia/leaguepedia.teams.servic
 import { LeaguepediaStatsService } from '../leaguepedia/leaguepedia.stats.service';
 import { Team } from '../entities/team.entity';
 import { Game } from '../entities/game.entity';
-
 import { CronLock, daysAgoUtc, hoursAgoUtc, readCsvEnv } from './cron.utils';
 
 @Injectable()
@@ -73,7 +72,7 @@ export class CronJobsService {
     try {
       for (const lg of this.targetLeagues) {
         try {
-          const rows = await this.statsSvc.fetchTournamentsByNameLike(lg, this.year, this.officialOnly);
+          const rows = await this.statsSvc.fetchTournamentsByNameLike(lg, this.year, this.officialOnly, true);
           const upserts = await this.statsSvc.upsertTournaments(rows);
           this.logger.log(`[tournamentsDaily] ${lg}: upserts=${upserts}`);
           await new Promise(r => setTimeout(r, 200)); // rate limit amigable
@@ -91,38 +90,241 @@ export class CronJobsService {
   // 3) Teams + Players (diario 03:20 UTC)
   //    Descubre equipos y jugadores de la ventana anual → evita NULLs en stats.
   // -------------------------------------------------------------------------
-  @Cron('20 3 * * *')
-  async teamsAndPlayersDaily() {
-    const LOCK_KEY = 10_003;
-    if (!(await this.lock.tryLock(LOCK_KEY))) {
-      this.logger.warn('[teamsAndPlayersDaily] lock busy, skipping');
-      return;
+    @Cron('20 3 * * *')
+async teamsAndPlayersDaily() {
+  const LOCK_KEY = 10_003;
+  if (!(await this.lock.tryLock(LOCK_KEY))) {
+    this.logger.warn('[teamsAndPlayersDaily] lock busy, skipping');
+    return;
+  }
+  this.logger.log(
+    `[teamsAndPlayersDaily] start (year=${this.year}, leagues=${this.targetLeagues.join(',')})`,
+  );
+
+  // Helpers
+  const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
+  const sanitize = (s: string) =>
+    (s ?? '')
+      .normalize('NFKC')
+      .replace(/[\u200B-\u200D\uFEFF\u00A0]/g, '') // ZWSP/BOM/NBSP
+      .replace(/[^\x20-\x7E]/g, '')               // no-imprimibles
+      .trim();
+  const baseCode = (s: string) => sanitize(s).replace(/[0-9]/g, '').toUpperCase();
+
+  // 🎯 Prioridad por liga (candidatos "fiables" primero)
+  // - LCK: LCK21 ➜ LoL Champions Korea ➜ League of Legends Champions Korea ➜ LCK
+  // - LPL: Tencent LoL Pro League ➜ LoL Pro League ➜ LPL2020 ➜ LPL
+  // - LEC: LEC ➜ LoL EMEA Championship ➜ League of Legends EMEA Championship
+  const prioritizedCandidates = (raw: string): string[] => {
+    const base = baseCode(raw);
+    const rawSan = sanitize(raw);
+    let list: string[] = [];
+
+    if (base === 'LCK') {
+      list = ['LCK21', 'LoL Champions Korea', 'League of Legends Champions Korea', 'LCK'];
+    } else if (base === 'LPL') {
+      list = ['Tencent LoL Pro League', 'LoL Pro League', 'LPL2020', 'LPL'];
+    } else if (base === 'LEC') {
+      list = ['LEC', 'LoL EMEA Championship', 'League of Legends EMEA Championship'];
+    } else {
+      // fallback genérico
+      list = [base];
     }
-    this.logger.log('[teamsAndPlayersDaily] start');
-    try {
-      const from = `${this.year}-01-01 00:00:00`;
-      const to   = `${this.year}-12-31 23:59:59`;
+    if (rawSan && !list.includes(rawSan)) list.push(rawSan);
+    // dedupe
+    return Array.from(new Set(list.filter(Boolean)));
+  };
 
-      for (const lg of this.targetLeagues) {
-        try {
-          // Teams primero
-          const tRes = await this.teamsSvc.upsertTeamsByLeagueNameLike(lg, from, to);
-          this.logger.log(`[teamsAndPlayersDaily] ${lg} teams: ${JSON.stringify(tRes)}`);
+  // (Opcional) barajar ligas por env para evitar sesgos de orden
+  const leagues = [...this.targetLeagues];
+  if (process.env.CRON_SHUFFLE_LEAGUES === '1') {
+    leagues.sort(() => Math.random() - 0.5);
+  }
 
-          // Players después (usa ScoreboardPlayers DISTINCT + Players + imageinfo/pageimages)
-          const pRes = await this.statsSvc.upsertPlayersByLeagueNameLike(lg, from, to, this.officialOnly);
-          this.logger.log(`[teamsAndPlayersDaily] ${lg} players: ${JSON.stringify(pRes)}`);
+  try {
+    const from = `${this.year}-01-01 00:00:00`;
+    const to   = `${this.year}-12-31 23:59:59`;
 
-          await new Promise(r => setTimeout(r, 250));
-        } catch (e) {
-          this.logger.error(`[teamsAndPlayersDaily] ${lg} error`, e as any);
+    for (const [i, lgRaw] of leagues.entries()) {
+      // Cooldown entre ligas: 2–3s al iniciar + si no es la primera liga, 6–9s extra
+      await sleep(2000 + Math.floor(Math.random() * 1000));
+      if (i > 0) await sleep(6000 + Math.floor(Math.random() * 3000));
+
+      const candidates = prioritizedCandidates(lgRaw);
+      const lgBase = baseCode(lgRaw);
+      this.logger.debug?.(
+        `[teamsAndPlayersDaily] ${lgRaw} candidates => ${JSON.stringify(candidates)}`,
+      );
+
+      // ---------- PREFLIGHT (teams) con backoff y cooldown fuerte si 0 ----------
+      let selectedLike: string | null = null;
+      const preflightBackoffs = [1500, 2500, 4000]; // ligeramente más altos
+
+      candidateLoop:
+      for (const like of candidates) {
+        for (let attempt = 0; attempt < preflightBackoffs.length; attempt++) {
+          try {
+            const names = await this.teamsSvc.listTeamsPlayedInLeague(like, from, to);
+            const count = names?.length ?? 0;
+            const sample = count ? names.slice(0, 5).join(' | ') : '';
+            this.logger.log(
+              `[teamsAndPlayersDaily] ${lgBase} preflight teams [${like}] ` +
+              `(try ${attempt + 1}/${preflightBackoffs.length}): count=${count}` +
+              (sample ? `, sample=${sample}` : ''),
+            );
+            if (count > 0) {
+              selectedLike = like;
+              // ✅ mini-cooldown para no golpear el mismo índice de caché inmediatamente
+              await sleep(2000 + Math.floor(Math.random() * 1500));
+              break candidateLoop;
+            }
+          } catch (e) {
+            this.logger.warn(
+              `[teamsAndPlayersDaily] ${lgBase} preflight teams error [${like}] ` +
+              `(try ${attempt + 1}): ${String(e)}`,
+            );
+          }
+          await sleep(preflightBackoffs[attempt]);
         }
       }
-    } finally {
-      await this.lock.unlock(LOCK_KEY);
-      this.logger.log('[teamsAndPlayersDaily] done');
+
+      // Plan B (torneos) solo si NADA funcionó
+      if (!selectedLike) {
+        this.logger.warn(
+          `[teamsAndPlayersDaily] ${lgBase} preflight teams found no names. Trying tournaments preflight...`,
+        );
+        for (const like of candidates) {
+          const attempts: Array<{ year?: number; primary?: boolean; label: string }> = [
+            { year: this.year,     primary: true,      label: 'y=year, primary' },
+            { year: undefined,     primary: true,      label: 'y=any,  primary' },
+            { year: this.year,     primary: undefined, label: 'y=year, anyLvl' },
+            { year: undefined,     primary: undefined, label: 'y=any,  anyLvl' },
+          ];
+          for (const a of attempts) {
+            try {
+              const rows = await this.statsSvc.fetchTournamentsByNameLike(
+                like, a.year, this.officialOnly ?? true, a.primary,
+              );
+              const count = rows?.length ?? 0;
+              const sample = count
+                ? rows.slice(0, 3).map((r: any) => r.Name).filter(Boolean).join(' | ')
+                : '';
+              this.logger.log(
+                `[teamsAndPlayersDaily] ${lgBase} preflight tournaments [${like}] (${a.label}): ` +
+                `count=${count}${sample ? `, sample=${sample}` : ''}`,
+              );
+              if (count > 0) {
+                selectedLike = like;
+                // cooldown mayor tras preflight de torneos antes de volver a SP/Teams
+                await sleep(3000 + Math.floor(Math.random() * 2000));
+                break;
+              }
+            } catch (e) {
+              this.logger.warn(
+                `[teamsAndPlayersDaily] ${lgBase} preflight tournaments error [${like}] ` +
+                `(${a.label}): ${String(e)}`,
+              );
+            }
+            await sleep(800 + Math.floor(Math.random() * 400));
+          }
+          if (selectedLike) break;
+        }
+      }
+
+      if (!selectedLike) {
+        this.logger.warn(
+          `[teamsAndPlayersDaily] ${lgBase} no like found after preflights. Proceeding with first candidate.`,
+        );
+        selectedLike = candidates[0];
+      }
+
+      // ---------- TEAMS ----------
+      let teamsRes: { discovered: number; enriched: number; upserts: number } = {
+        discovered: 0, enriched: 0, upserts: 0,
+      };
+      let likeUsedForTeams: string | null = null;
+
+      try {
+        teamsRes = await this.teamsSvc.upsertTeamsByLeagueNameLike(selectedLike, from, to);
+        this.logger.log(
+          `[teamsAndPlayersDaily] ${lgBase} teams [${selectedLike}]: ${JSON.stringify(teamsRes)}`,
+        );
+        if (teamsRes.discovered > 0) likeUsedForTeams = selectedLike;
+      } catch (e) {
+        this.logger.warn(
+          `[teamsAndPlayersDaily] ${lgBase} teams error with like="${selectedLike}": ${String(e)}`,
+        );
+      }
+
+      // Fallbacks si sigue 0 (con 1–2 reintentos por candidato)
+      if (teamsRes.discovered === 0) {
+        for (const like of candidates.filter(c => c !== selectedLike)) {
+          for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+              await sleep(1200 + Math.floor(Math.random() * 800));
+              const t2 = await this.teamsSvc.upsertTeamsByLeagueNameLike(like, from, to);
+              this.logger.log(
+                `[teamsAndPlayersDaily] ${lgBase} teams [fallback:${like}] ` +
+                `(try ${attempt + 1}/2): ${JSON.stringify(t2)}`,
+              );
+              if (t2.discovered > 0) {
+                teamsRes = t2;
+                likeUsedForTeams = like;
+                break;
+              }
+            } catch (e) {
+              this.logger.warn(
+                `[teamsAndPlayersDaily] ${lgBase} teams fallback error [${like}]: ${String(e)}`,
+              );
+            }
+          }
+          if (likeUsedForTeams) break;
+        }
+      }
+
+      if (teamsRes.discovered === 0) {
+        const dbg = Array.from(lgRaw)
+          .map(c => `${c} (U+${c.charCodeAt(0).toString(16).toUpperCase()})`)
+          .join(' | ');
+        this.logger.debug?.(
+          `[teamsAndPlayersDaily] ${lgBase} teams discovered=0. raw="${lgRaw}" chars=${dbg}`,
+        );
+      }
+
+      // ---------- PLAYERS ----------
+      // Cooldown antes de pedir players (reduce “caché vacía”)
+      await sleep(2500 + Math.floor(Math.random() * 1500));
+
+      const playerCandidates = likeUsedForTeams
+        ? [likeUsedForTeams, ...candidates.filter(c => c !== likeUsedForTeams)]
+        : [selectedLike, ...candidates.filter(c => c !== selectedLike)];
+
+      for (const like of playerCandidates) {
+        try {
+          const pRes = await this.statsSvc.upsertPlayersByLeagueNameLike(
+            like, from, to, this.officialOnly,
+          );
+          this.logger.log(
+            `[teamsAndPlayersDaily] ${lgBase} players [${like}]: ${JSON.stringify(pRes)}`,
+          );
+          if (pRes.discovered > 0) break;
+          await sleep(1200 + Math.floor(Math.random() * 800));
+        } catch (e) {
+          this.logger.warn(
+            `[teamsAndPlayersDaily] ${lgBase} players error with like="${like}": ${String(e)}`,
+          );
+          await sleep(1200);
+        }
+      }
+
+      // ✅ Cooldown grande tras terminar una liga (8–12s)
+      await sleep(8000 + Math.floor(Math.random() * 4000));
     }
+  } finally {
+    await this.lock.unlock(LOCK_KEY);
+    this.logger.log('[teamsAndPlayersDaily] done');
   }
+}
 
   // -------------------------------------------------------------------------
   // 4) Games (cada hora, minuto 10) – ventana móvil
@@ -137,8 +339,17 @@ export class CronJobsService {
     }
     this.logger.log('[gamesHourly] start');
     try {
-      const to = new Date().toISOString().slice(0, 19).replace('T', ' ');
-      const from = hoursAgoUtc(this.gamesWindowH);
+      // ✅ Ventana anual basada en CRON_LEAGUE_YEAR
+      const year =
+        Number(process.env.CRON_LEAGUE_YEAR) ||
+        Number(this.year) ||
+        new Date().getUTCFullYear();
+
+      // Desde el 1 de enero 00:00:00 hasta el 12 de diciembre 23:59:59 de ese año
+      const from = `${year}-01-01 00:00:00`;
+      const to   = `${year}-12-12 23:59:59`;
+
+      this.logger.log(`[gamesHourly] window (yearly): from=${from} to=${to} (year=${year})`);
 
       for (const lg of this.targetLeagues) {
         try {
@@ -151,7 +362,8 @@ export class CronJobsService {
         }
       }
 
-      // Normalización opcional: asignar team*_id/winner_team_id por nombre (si existen)
+      // Puedes mantener la normalización por ventana reciente en horas
+      // (no interfiere con el rango anterior y ayuda a resolver team_ids de lo último insertado)
       await this.normalizeRecentGamesTeams(this.gamesWindowH);
     } finally {
       await this.lock.unlock(LOCK_KEY);
@@ -172,8 +384,16 @@ export class CronJobsService {
     }
     this.logger.log('[statsHourly] start');
     try {
-      const to = new Date().toISOString().slice(0, 19).replace('T', ' ');
-      const from = hoursAgoUtc(this.statsWindowH);
+      // ✅ Ventana anual basada en CRON_LEAGUE_YEAR (fallback: this.year o current UTC year)
+      const year =
+        Number(process.env.CRON_LEAGUE_YEAR) ||
+        Number(this.year) ||
+        new Date().getUTCFullYear();
+
+      const from = `${year}-01-01 00:00:00`;
+      const to   = `${year}-12-31 23:59:59`; // ← usa 31 dic; si quieres 12 dic, cámbialo aquí
+
+      this.logger.log(`[statsHourly] window (yearly): from=${from} to=${to} (year=${year})`);
 
       for (const lg of this.targetLeagues) {
         try {

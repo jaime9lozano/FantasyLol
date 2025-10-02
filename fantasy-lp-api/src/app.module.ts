@@ -9,7 +9,7 @@ import { CronModule } from './cron/cron.module';
 @Module({
   
 imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({ isGlobal: true },),
     DatabaseModule,
     LeaguepediaModule,
     CronModule,
