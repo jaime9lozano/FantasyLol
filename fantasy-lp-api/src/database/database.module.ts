@@ -9,6 +9,18 @@ import { Role } from 'src/entities/role.entity';
 import { TeamPlayerMembership } from 'src/entities/team-player-membership.entity';
 import { Team } from 'src/entities/team.entity';
 import { Tournament } from 'src/entities/tournament.entity';
+import { FantasyLeague } from 'src/fantasy/leagues/fantasy-league.entity';
+import { FantasyManager } from 'src/fantasy/leagues/fantasy-manager.entity';
+import { MarketBid } from 'src/fantasy/market/market-bid.entity';
+import { MarketOrder } from 'src/fantasy/market/market-order.entity';
+import { TransferOffer } from 'src/fantasy/offers/transfer-offer.entity';
+import { TransferTransaction } from 'src/fantasy/offers/transfer-transaction.entity';
+import { FantasyPlayerPoints } from 'src/fantasy/scoring/fantasy-player-points.entity';
+import { FantasyScoringPeriod } from 'src/fantasy/scoring/fantasy-scoring-period.entity';
+import { FantasyTeamPoints } from 'src/fantasy/scoring/fantasy-team-points.entity';
+import { FantasyRosterSlot } from 'src/fantasy/teams/fantasy-roster-slot.entity';
+import { FantasyTeam } from 'src/fantasy/teams/fantasy-team.entity';
+import { FantasyPlayerValuation } from 'src/fantasy/valuation/fantasy-player-valuation.entity';
 
 @Module({
   imports: [
@@ -37,6 +49,12 @@ import { Tournament } from 'src/entities/tournament.entity';
             Game,
             PlayerGameStats,
             TeamPlayerMembership,
+            FantasyManager, FantasyLeague, FantasyTeam, FantasyRosterSlot,
+            MarketOrder, MarketBid,
+            TransferOffer, TransferTransaction,
+            FantasyScoringPeriod, FantasyPlayerPoints, FantasyTeamPoints,
+            FantasyPlayerValuation
+
           ],
         };
       },
