@@ -160,161 +160,195 @@ export class MarketService {
 
   async closeDailyAuctions(fantasyLeagueId: number, now = new Date()) {
     return this.ds.transaction(async (trx) => {
-      const orders: Array<{ id: number; player_id: number }> = await trx.query(
+      // 1) Bloquea órdenes elegibles (vencidas, abiertas, de tipo AUCTION)
+      const orders: Array<{ id: number; player_id: number; owner_team_id: number }> = await trx.query(
         `
-        SELECT id, player_id
+        SELECT id::int AS id, player_id::bigint AS player_id, owner_team_id::int AS owner_team_id
         FROM ${T('market_order')}
         WHERE fantasy_league_id = $1
-          AND type = 'AUCTION'
           AND status = 'OPEN'
+          AND UPPER(type) = 'AUCTION'
           AND closes_at <= $2
         ORDER BY closes_at ASC, id
-        FOR UPDATE
+        FOR UPDATE SKIP LOCKED
         `,
         [fantasyLeagueId, now],
       );
 
-      for (const order of orders) {
-        const bids: Array<{ bidder_team_id: number; amount: bigint }> = await trx.query(
-          `
-          SELECT bidder_team_id, amount::bigint AS amount
-          FROM ${T('market_bid')}
-          WHERE market_order_id = $1
-          ORDER BY amount DESC, created_at ASC
-          `,
-          [order.id],
-        );
+      let settledCount = 0;
 
-        if (bids.length === 0) {
+      for (const order of orders) {
+        // 2) Mayor puja (cast explícito) primero
+        const [winner] =
+          (await trx.query(
+            `
+            SELECT bidder_team_id::int AS bidder_team_id, amount::bigint AS amount
+            FROM ${T('market_bid')}
+            WHERE market_order_id = $1
+            ORDER BY amount::bigint DESC, created_at ASC, id ASC
+            LIMIT 1
+            `,
+            [order.id],
+          )) ?? [];
+
+        if (!winner) {
+          // Sin pujas → cerrar sin transferir
           await trx.query(
-            `UPDATE ${T('market_order')} SET status='CLOSED', updated_at=now() WHERE id=$1`,
+            `UPDATE ${T('market_order')}
+              SET status = 'CLOSED', closes_at = now(), updated_at = now()
+            WHERE id = $1`,
             [order.id],
           );
           continue;
         }
 
-        let settled = false;
-
-        for (const w of bids) {
-          // jugador libre?
-          const existing = await trx.query(
+        // 3) Bloquea equipo ganador y comprueba saldo disponible
+        const [team] =
+          (await trx.query(
             `
-            SELECT id
-            FROM ${T('fantasy_roster_slot')}
-            WHERE fantasy_league_id = $1 AND player_id = $2 AND active = true
-            FOR UPDATE
-            `,
-            [fantasyLeagueId, order.player_id],
-          );
-          if (existing.length > 0) continue;
-
-          // equipo ganador
-          const teamRows = await trx.query(
-            `
-            SELECT id, budget_remaining::bigint AS br, budget_reserved::bigint AS bz
+            SELECT id::int AS id,
+                  budget_remaining::bigint AS br,
+                  budget_reserved::bigint  AS bz
             FROM ${T('fantasy_team')}
             WHERE id = $1 AND fantasy_league_id = $2
             FOR UPDATE
             `,
-            [w.bidder_team_id, fantasyLeagueId],
+            [winner.bidder_team_id, fantasyLeagueId],
+          )) ?? [];
+
+        if (!team) {
+          // Equipo no válido → cierra como CLOSED (sin adjudicar)
+          await trx.query(
+            `UPDATE ${T('market_order')}
+              SET status = 'CLOSED', closes_at = now(), updated_at = now()
+            WHERE id = $1`,
+            [order.id],
           );
-          if (teamRows.length === 0) continue;
-          const team = teamRows[0];
+          continue;
+        }
 
-          const available = BigInt(team.br) - BigInt(team.bz);
-          if (available < w.amount) continue;
+        const available = BigInt(team.br) - BigInt(team.bz);
+        const winAmount = BigInt(winner.amount);
+        if (available < winAmount) {
+          // Ganador sin saldo suficiente → cierra sin adjudicar (o podrías pasar al siguiente mejor postor)
+          await trx.query(
+            `UPDATE ${T('market_order')}
+              SET status = 'CLOSED', closes_at = now(), updated_at = now()
+            WHERE id = $1`,
+            [order.id],
+          );
+          continue;
+        }
 
-          // última puja del ganador (para liberar)
-          const lastWinner = await trx.query(
+        // 4) Última puja del ganador (lo reservado que debe liberar tras pagar)
+        const [lastWinRow] =
+          (await trx.query(
             `
             SELECT amount::bigint AS amount
             FROM ${T('market_bid')}
-            WHERE market_order_id = $1 AND bidder_team_id = $2
-            ORDER BY amount DESC, created_at ASC
+            WHERE market_order_id = $1
+              AND bidder_team_id = $2
+            ORDER BY amount::bigint DESC, created_at ASC, id ASC
             LIMIT 1
             `,
             [order.id, team.id],
-          );
-          const releaseWinner: bigint = lastWinner[0]?.amount ?? 0n;
+          )) ?? [];
+        const releaseWinner: bigint = lastWinRow?.amount ?? 0n;
 
-          // descuenta remaining y libera su reserva
+        // 5) Descuenta pago y libera su reserva
+        await trx.query(
+          `
+          UPDATE ${T('fantasy_team')}
+          SET budget_remaining = budget_remaining - $1::bigint,
+              budget_reserved  = budget_reserved  - $2::bigint,
+              updated_at = now()
+          WHERE id = $3
+          `,
+          [winAmount.toString(), releaseWinner.toString(), team.id],
+        );
+
+        // 6) Libera reservas del resto de postores
+        const otherBidders: Array<{ bidder_team_id: number; last_amount: bigint }> = await trx.query(
+          `
+          SELECT DISTINCT b.bidder_team_id::int AS bidder_team_id,
+                (SELECT lb.amount::bigint
+                    FROM ${T('market_bid')} lb
+                  WHERE lb.market_order_id = b.market_order_id
+                    AND lb.bidder_team_id   = b.bidder_team_id
+                  ORDER BY lb.amount::bigint DESC, lb.created_at ASC, lb.id ASC
+                  LIMIT 1) AS last_amount
+          FROM ${T('market_bid')} b
+          WHERE b.market_order_id = $1
+            AND b.bidder_team_id <> $2
+          `,
+          [order.id, team.id],
+        );
+
+        for (const ob of otherBidders) {
           await trx.query(
             `
             UPDATE ${T('fantasy_team')}
-            SET budget_remaining = budget_remaining - $1::bigint,
-                budget_reserved  = budget_reserved  - $2::bigint,
+            SET budget_reserved = budget_reserved - COALESCE($1::bigint, 0),
                 updated_at = now()
-            WHERE id = $3
+            WHERE id = $2
             `,
-            [w.amount.toString(), releaseWinner.toString(), team.id],
+            [(ob.last_amount ?? 0n).toString(), ob.bidder_team_id],
           );
-
-          // libera reservas de los otros postores
-          const otherBidders: Array<{ bidder_team_id: number; last_amount: bigint }> = await trx.query(
-            `
-            SELECT DISTINCT b.bidder_team_id,
-                   (SELECT lb.amount::bigint
-                      FROM ${T('market_bid')} lb
-                      WHERE lb.market_order_id = b.market_order_id
-                        AND lb.bidder_team_id   = b.bidder_team_id
-                      ORDER BY lb.amount DESC, lb.created_at ASC
-                      LIMIT 1) AS last_amount
-            FROM ${T('market_bid')} b
-            WHERE b.market_order_id = $1 AND b.bidder_team_id <> $2
-            `,
-            [order.id, team.id],
-          );
-
-          for (const ob of otherBidders) {
-            await trx.query(
-              `
-              UPDATE ${T('fantasy_team')}
-              SET budget_reserved = budget_reserved - COALESCE($1::bigint, 0),
-                  updated_at = now()
-              WHERE id = $2
-              `,
-              [(ob.last_amount ?? 0n).toString(), ob.bidder_team_id],
-            );
-          }
-
-          // crea slot (BENCH)
-          await trx.query(
-            `
-            INSERT INTO ${T('fantasy_roster_slot')}
-              (fantasy_league_id, fantasy_team_id, player_id, slot, starter, active, acquisition_price, clause_value, valid_from, created_at, updated_at)
-            VALUES ($1, $2, $3, 'BENCH', false, true, $4::bigint, $4::bigint, now(), now(), now())
-            `,
-            [fantasyLeagueId, team.id, order.player_id, w.amount.toString()],
-          );
-
-          // auditoría y cierre
-          await trx.query(
-            `
-            INSERT INTO ${T('transfer_transaction')}
-              (fantasy_league_id, player_id, from_team_id, to_team_id, amount, type)
-            VALUES ($1, $2, NULL, $3, $4::bigint, 'AUCTION_WIN')
-            `,
-            [fantasyLeagueId, order.player_id, team.id, w.amount.toString()],
-          );
-
-          await trx.query(
-            `UPDATE ${T('market_order')} SET status='SETTLED', updated_at=now() WHERE id=$1`,
-            [order.id],
-          );
-
-          settled = true;
-          break;
         }
 
-        if (!settled) {
-          await trx.query(
-            `UPDATE ${T('market_order')} SET status='CLOSED', updated_at=now() WHERE id=$1`,
-            [order.id],
-          );
-        }
+        // 7) TRANSFERENCIA:
+        //    Desactiva cualquier slot ACTIVO del jugador en la liga (incluido el del owner)
+        await trx.query(
+          `
+          UPDATE ${T('fantasy_roster_slot')}
+          SET active = false, updated_at = now()
+          WHERE fantasy_league_id = $1
+            AND player_id = $2
+            AND active = true
+          `,
+          [fantasyLeagueId, order.player_id],
+        );
+
+        //    Inserta/activa slot en el equipo ganador (BENCH, starter=false)
+        await trx.query(
+          `
+          INSERT INTO ${T('fantasy_roster_slot')}
+            (fantasy_league_id, fantasy_team_id, player_id, slot, starter, active,
+            acquisition_price, clause_value, valid_from, created_at, updated_at)
+          VALUES ($1, $2, $3, 'BENCH', false, true,
+                  $4::bigint, $4::bigint, now(), now(), now())
+          ON CONFLICT (fantasy_league_id, fantasy_team_id, player_id)
+          DO UPDATE SET active = true, starter = false, slot = 'BENCH', updated_at = now()
+          `,
+          [fantasyLeagueId, team.id, order.player_id, winAmount.toString()],
+        );
+
+        // 8) Auditoría
+        await trx.query(
+          `
+          INSERT INTO ${T('transfer_transaction')}
+            (fantasy_league_id, player_id, from_team_id, to_team_id, amount, type,  executed_at)
+          VALUES ($1, $2, $3, $4, $5::bigint, 'AUCTION_WIN', now())
+          `,
+          [fantasyLeagueId, order.player_id, order.owner_team_id, team.id, winAmount.toString()],
+        );
+
+        // 9) Cierra orden con datos de ganador
+        await trx.query(
+          `
+          UPDATE ${T('market_order')}
+          SET status = 'CLOSED',
+              closes_at = now(),
+              updated_at = now()
+          WHERE id = $1
+          `,
+          [order.id],
+        );
+
+        settledCount++;
       }
 
-      return { ok: true, processed: orders.length };
+      return { ok: true, processed: orders.length, settled: settledCount };
     });
   }
 }

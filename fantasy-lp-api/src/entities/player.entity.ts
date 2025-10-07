@@ -1,4 +1,5 @@
-import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
+import { PlayerGameStats } from './player-game-stats.entity';
 
 @Entity({ name: 'player', schema: 'public'  })
 export class Player {
@@ -25,4 +26,7 @@ export class Player {
 
   @Column({ type: 'timestamptz', name: 'updated_at', default: () => 'NOW()' })
   updatedAt: Date;
+
+  @OneToMany(() => PlayerGameStats, (s) => s.player, { eager: false })
+  playerStats: PlayerGameStats[];
 }

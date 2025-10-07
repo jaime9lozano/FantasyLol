@@ -1,6 +1,8 @@
-import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
+// src/core/entities/game.entity.ts
+import { Entity, Column, PrimaryGeneratedColumn, OneToMany } from 'typeorm';
+import { PlayerGameStats } from './player-game-stats.entity';
 
-@Entity({ name: 'game', schema: 'public'  })
+@Entity({ name: 'game', schema: 'public' })
 export class Game {
   @PrimaryGeneratedColumn()
   id: number;
@@ -52,4 +54,8 @@ export class Game {
 
   @Column({ type: 'timestamptz', name: 'updated_at', default: () => 'NOW()' })
   updatedAt: Date;
+
+  // ✅ Relación inversa (no cambia columnas, solo facilita joins con ORM)
+  @OneToMany(() => PlayerGameStats, (s) => s.game, { eager: false })
+  playerStats: PlayerGameStats[];
 }

@@ -1,14 +1,35 @@
-import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
+// src/core/entities/player_game_stats.entity.ts
+import {
+  Entity,
+  Column,
+  PrimaryGeneratedColumn,
+  ManyToOne,
+  JoinColumn,
+  RelationId,
+} from 'typeorm';
+import { Game } from './game.entity';
+import { Player } from './player.entity';
+// (opcional) si quieres relación a Player: import { Player } from './player.entity';
 
-@Entity({ name: 'player_game_stats', schema: 'public'  })
+@Entity({ name: 'player_game_stats', schema: 'public' })
 export class PlayerGameStats {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ type: 'int', name: 'game_id' })
+  // ✅ Relación a Game (usa la columna real 'game_id')
+  @ManyToOne(() => Game, (g) => g.playerStats, { eager: false, onDelete: 'NO ACTION' })
+  @JoinColumn({ name: 'game_id', referencedColumnName: 'id' })
+  game: Game;
+
+  // ✅ Mantén la propiedad gameId como SOLO LECTURA (no crea columna nueva)
+  @RelationId((s: PlayerGameStats) => s.game)
   gameId: number;
 
-  @Column({ type: 'int', name: 'player_id' })
+  @ManyToOne(() => Player, (p) => p.playerStats, { eager: false })
+  @JoinColumn({ name: 'player_id', referencedColumnName: 'id' })
+  player: Player;
+
+  @RelationId((s: PlayerGameStats) => s.player)
   playerId: number;
 
   @Column({ type: 'text', name: 'player_page_text', nullable: true })
