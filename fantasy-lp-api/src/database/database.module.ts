@@ -22,6 +22,7 @@ import { FantasyRosterSlot } from 'src/fantasy/teams/fantasy-roster-slot.entity'
 import { FantasyTeam } from 'src/fantasy/teams/fantasy-team.entity';
 import { FantasyPlayerValuation } from 'src/fantasy/valuation/fantasy-player-valuation.entity';
 
+
 @Module({
   imports: [
     ConfigModule,
@@ -30,31 +31,25 @@ import { FantasyPlayerValuation } from 'src/fantasy/valuation/fantasy-player-val
       inject: [ConfigService],
       useFactory: (cfg: ConfigService) => {
         const url = cfg.get<string>('DATABASE_URL');
-        if (!url) {
-          throw new Error('DATABASE_URL is not defined');
-        }
+        if (!url) throw new Error('DATABASE_URL is not defined');
+
         return {
           type: 'postgres',
           url,
-          // IMPORTANT: no sincronizamos (usaremos migraciones / ya tienes DDL aplicado)
+          schema: 'public',                                // ⬅️ siempre public
           synchronize: false,
-          // Si quieres logging: 'all' | ['query','error'] | false
           logging: ['error'],
+          ssl: { rejectUnauthorized: false },              // Supabase pooler
+          extra: { options: `-c search_path=public` },     // ⬅️ search_path fijo a public
           entities: [
-            League,
-            Tournament,
-            Role,
-            Team,
-            Player,
-            Game,
-            PlayerGameStats,
-            TeamPlayerMembership,
+            // Core
+            League, Tournament, Role, Team, Player, Game, PlayerGameStats, TeamPlayerMembership,
+            // Fantasy (en prod/desa viven en public)
             FantasyManager, FantasyLeague, FantasyTeam, FantasyRosterSlot,
             MarketOrder, MarketBid,
             TransferOffer, TransferTransaction,
             FantasyScoringPeriod, FantasyPlayerPoints, FantasyTeamPoints,
-            FantasyPlayerValuation
-
+            FantasyPlayerValuation,
           ],
         };
       },
@@ -62,4 +57,3 @@ import { FantasyPlayerValuation } from 'src/fantasy/valuation/fantasy-player-val
   ],
 })
 export class DatabaseModule {}
-

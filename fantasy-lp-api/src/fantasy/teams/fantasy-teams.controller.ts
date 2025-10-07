@@ -1,5 +1,5 @@
 // src/fantasy/teams/fantasy-teams.controller.ts
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post } from '@nestjs/common';
 import { FantasyTeamsService } from './fantasy-teams.service';
 import { MoveLineupDto } from './dto/move-lineup.dto';
 
@@ -13,6 +13,7 @@ export class FantasyTeamsController {
   }
 
   @Post(':id/lineup')
+  @HttpCode(HttpStatus.OK)
   move(@Param('id') id: string, @Body() dto: MoveLineupDto) {
     return this.svc.moveLineup(Number(id), dto);
   }

@@ -1,5 +1,5 @@
 // src/fantasy/offers/offers.controller.ts
-import { Body, Controller, Param, Post } from '@nestjs/common';
+import { Body, Controller, HttpCode, HttpStatus, Param, Post } from '@nestjs/common';
 import { OffersService } from './offers.service';
 import { CreateOfferDto } from './dto/create-offer.dto';
 import { RespondOfferDto } from './dto/respond-offer.dto';
@@ -14,6 +14,7 @@ export class OffersController {
   }
 
   @Post(':id/respond')
+  @HttpCode(HttpStatus.OK)
   respond(@Param('id') id: string, @Body() dto: RespondOfferDto) {
     return this.svc.respond(Number(id), dto);
   }

@@ -5,6 +5,7 @@ import { DataSource, Repository } from 'typeorm';
 import { FantasyTeam } from './fantasy-team.entity';
 import { FantasyRosterSlot } from './fantasy-roster-slot.entity';
 import { MoveLineupDto } from './dto/move-lineup.dto';
+import { T } from '../../database/schema.util';
 
 @Injectable()
 export class FantasyTeamsService {
@@ -15,11 +16,15 @@ export class FantasyTeamsService {
   ) {}
 
   async getRoster(teamId: number) {
-    return this.roster.find({ where: { fantasyTeam: { id: teamId } as any, active: true }, relations: ['player'] });
+    // Repos/relations respetan search_path => no hace falta prefijar schema
+    return this.roster.find({
+      where: { fantasyTeam: { id: teamId } as any, active: true },
+      relations: ['player'],
+    });
   }
 
   async moveLineup(teamId: number, dto: MoveLineupDto) {
-    return this.ds.transaction(async trx => {
+    return this.ds.transaction(async (trx) => {
       const slot = await trx.findOne(FantasyRosterSlot, {
         where: { id: dto.rosterSlotId, fantasyTeam: { id: teamId } as any, active: true },
         lock: { mode: 'pessimistic_write' },
@@ -38,15 +43,26 @@ export class FantasyTeamsService {
   }
 
   async freeAgents(leagueId: number) {
-    return this.ds.query(`
-      SELECT p.id AS player_id, p.display_name, COALESCE(fpv.current_value, 0) AS value
+    // Core: public.player (se mantiene).
+    // Fantasy: usar T('...') para respetar DB_SCHEMA (test en E2E).
+    return this.ds.query(
+      `
+      SELECT
+        p.id AS player_id,
+        p.display_name,
+        COALESCE(fpv.current_value, 0) AS value
       FROM public.player p
-      LEFT JOIN public.fantasy_roster_slot fr
-        ON fr.player_id = p.id AND fr.fantasy_league_id = $1 AND fr.active = true
-      LEFT JOIN public.fantasy_player_valuation fpv
-        ON fpv.fantasy_league_id = $1 AND fpv.player_id = p.id
+      LEFT JOIN ${T('fantasy_roster_slot')} fr
+        ON fr.player_id = p.id
+       AND fr.fantasy_league_id = $1
+       AND fr.active = true
+      LEFT JOIN ${T('fantasy_player_valuation')} fpv
+        ON fpv.fantasy_league_id = $1
+       AND fpv.player_id = p.id
       WHERE fr.id IS NULL
       ORDER BY COALESCE(fpv.current_value, 0) DESC NULLS LAST, p.display_name ASC
-    `, [leagueId]);
+      `,
+      [leagueId],
+    );
   }
 }

@@ -1,5 +1,5 @@
 // src/fantasy/leagues/fantasy-leagues.controller.ts
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post } from '@nestjs/common';
 import { FantasyLeaguesService } from './fantasy-leagues.service';
 import { CreateFantasyLeagueDto } from './dto/create-fantasy-league.dto';
 import { JoinLeagueDto } from './dto/join-league.dto';
@@ -16,6 +16,7 @@ export class FantasyLeaguesController {
   }
 
   @Post('join')
+  @HttpCode(HttpStatus.CREATED)
   join(@Body() dto: JoinLeagueDto) {
     return this.svc.joinLeague(dto);
   }

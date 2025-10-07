@@ -4,6 +4,7 @@ import { Cron } from '@nestjs/schedule';
 import { DataSource } from 'typeorm';
 import { MarketService } from '../market/market.service';
 import { ValuationService } from '../valuation/valuation.service';
+import { T } from '../../database/schema.util';
 
 @Injectable()
 export class FantasySchedulerService {
@@ -36,7 +37,7 @@ export class FantasySchedulerService {
   /**
    * 1) LOCK de jugadores: cada minuto bloquea jugadores que tengan partida
    *  - Ventana: [now()-15min, now()+15min]; lock_until = game.datetime_utc + 2h (fallback).
-   *  - Usa tu SQL real y tpm (team_player_membership) para filtrar por pertenencia vigente.
+   *  - Mantiene core en public.* y fantasy en schema actual (T()).
    */
   @Cron('* * * * *')
   async lockPlayersAroundGames() {
@@ -44,26 +45,26 @@ export class FantasySchedulerService {
       const sql = `
         WITH window_games AS (
           SELECT id AS game_id,
-                team1_id,
-                team2_id,
-                datetime_utc,
-                datetime_utc - interval '15 minutes' AS lock_from,
-                datetime_utc + interval '2 hours'   AS lock_to
+                 team1_id,
+                 team2_id,
+                 datetime_utc,
+                 datetime_utc - interval '15 minutes' AS lock_from,
+                 datetime_utc + interval '2 hours'   AS lock_to
           FROM public.game
           WHERE datetime_utc BETWEEN now() - interval '15 minutes' AND now() + interval '15 minutes'
         )
-        UPDATE public.fantasy_roster_slot fr
+        UPDATE ${T('fantasy_roster_slot')} fr
         SET locked_until = GREATEST(COALESCE(fr.locked_until, now()), wg.lock_to),
             updated_at   = now()
         FROM window_games wg
         JOIN public.team_player_membership tpm
           ON (tpm.first_seen_utc IS NULL OR tpm.first_seen_utc <= wg.datetime_utc)
-        AND (tpm.last_seen_utc  IS NULL OR tpm.last_seen_utc  >= wg.datetime_utc)
+         AND (tpm.last_seen_utc  IS NULL OR tpm.last_seen_utc  >= wg.datetime_utc)
         WHERE fr.active = true
-          AND tpm.player_id = fr.player_id  -- ✅ mover aquí la referencia a 'fr'
+          AND tpm.player_id = fr.player_id
           AND (tpm.team_id = wg.team1_id OR tpm.team_id = wg.team2_id)
           AND now() >= wg.lock_from
-          AND (fr.locked_until IS NULL OR fr.locked_until < wg.lock_to); -- opcional, evita updates innecesarios
+          AND (fr.locked_until IS NULL OR fr.locked_until < wg.lock_to);
       `;
       await this.ds.query(sql);
     } catch (e) {
@@ -74,15 +75,16 @@ export class FantasySchedulerService {
   /**
    * 2) Cierre de subastas expiradas (AUCTION): cada minuto
    *  - Busca ligas con órdenes OPEN y closes_at <= now() y llama a MarketService.closeDailyAuctions por liga.
-   *  - Idempotente (service ya verifica status y fechas).
    */
   @Cron('* * * * *')
   async closeExpiredAuctions() {
     try {
       const rows: Array<{ fantasy_league_id: number }> = await this.ds.query(
-        `SELECT DISTINCT fantasy_league_id
-           FROM public.market_order
-          WHERE type = 'AUCTION' AND status = 'OPEN' AND closes_at <= now()`
+        `
+        SELECT DISTINCT fantasy_league_id
+        FROM ${T('market_order')}
+        WHERE type = 'AUCTION' AND status = 'OPEN' AND closes_at <= now()
+        `
       );
 
       for (const r of rows) {
@@ -95,16 +97,15 @@ export class FantasySchedulerService {
   }
 
   /**
-   * 3) Revaluación nocturna: comprueba todas las ligas cada 5 minutos y
-   *    si es ~03:00 en la timezone de la liga y no se ha recalculado hoy, ejecuta recalcAllValues.
-   *  - Revisión cada 5 minutos para minimizar ejecuciones múltiples.
-   *  - Check en BD (calc_date = hoy) para no repetir.
+   * 3) Revaluación nocturna por liga.
+   *  - Comprueba todas las ligas cada 5 minutos; si es ~03:00 local y no se recalculó hoy, ejecuta recalcAllValues.
+   *  - Mantiene fantasy en schema actual (T()).
    */
   @Cron('*/5 * * * *')
   async nightlyRevaluationPerLeague() {
     try {
       const leagues: Array<{ id: number; timezone: string }> = await this.ds.query(
-        `SELECT id, timezone FROM public.fantasy_league`
+        `SELECT id, timezone FROM ${T('fantasy_league')}`
       );
 
       const nowUTC = new Date();
@@ -115,13 +116,16 @@ export class FantasySchedulerService {
         if (hour === 3 && minute < 10) {
           // ¿ya hay recálculo hoy?
           const exists: Array<{ ok: number }> = await this.ds.query(
-            `SELECT 1 AS ok
-               FROM public.fantasy_player_valuation
-              WHERE fantasy_league_id = $1 AND calc_date = $2
-              LIMIT 1`,
+            `
+            SELECT 1 AS ok
+            FROM ${T('fantasy_player_valuation')}
+            WHERE fantasy_league_id = $1 AND calc_date = $2
+            LIMIT 1
+            `,
             [lg.id, dateStr]
           );
           if (exists.length === 0) {
+            // Mantengo tu firma (leagueId, nowUTC). Si tu servicio usa otra, ajusta aquí.
             await this.valuation.recalcAllValues(lg.id, nowUTC);
             this.logger.log(`Revaluación ejecutada para liga ${lg.id} (${lg.timezone})`);
           }

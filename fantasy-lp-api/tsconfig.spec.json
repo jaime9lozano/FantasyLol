@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node16",
+    "types": ["jest", "node"],
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "baseUrl": ".",
+    "paths": {
+      "src/*": ["src/*"],
+      "test/*": ["test/*"]
+    },
+    "isolatedModules": true,
+    "resolvePackageJsonExports": false
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

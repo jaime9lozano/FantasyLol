@@ -1,5 +1,5 @@
 // src/fantasy/market/market.controller.ts
-import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query } from '@nestjs/common';
 import { MarketService } from './market.service';
 import { PlaceBidDto } from './dto/place-bid.dto';
 import { CreateListingDto } from './dto/create-listing.dto';
@@ -20,6 +20,7 @@ export class MarketController {
 
   // /diag: cierra subastas vencidas (debug manual)
   @Post('close')
+  @HttpCode(HttpStatus.OK)
   close(@Query('leagueId') leagueId: string) {
     return this.svc.closeDailyAuctions(Number(leagueId));
   }
