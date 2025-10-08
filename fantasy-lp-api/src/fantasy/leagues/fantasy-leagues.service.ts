@@ -136,6 +136,16 @@ export class FantasyLeaguesService {
     return this.leagues.save(league);
   }
 
+  async updateEconomicConfig(leagueId: number, partial: any) {
+    const league = await this.leagues.findOne({ where: { id: leagueId } });
+    if (!league) throw new BadRequestException('Liga no encontrada');
+    const current = (league as any).economicConfig || {};
+    const merged = { ...current, ...partial };
+    (league as any).economicConfig = merged;
+    await this.leagues.save(league);
+    return { ok: true, economicConfig: merged };
+  }
+
   /**
    * Selecciona el torneo "activo" más reciente para la liga (split actual) y cachea datos.
    * Criterio: tournament.league ILIKE code% AND date_start <= today AND (date_end IS NULL OR date_end >= today)

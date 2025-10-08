@@ -30,4 +30,9 @@ export class FantasyLeaguesController {
   update(@Param('id') id: string, @Body() dto: UpdateLeagueDto) {
     return this.svc.updateLeague(Number(id), dto);
   }
+
+  @Patch(':id/economic-config')
+  updateEconomic(@Param('id') id: string, @Body() body: any) {
+    return this.svc.updateEconomicConfig(Number(id), body);
+  }
 }
