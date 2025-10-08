@@ -90,24 +90,36 @@ export class ValuationService {
         [clause.toString(), buyer.id],
       );
 
-      // Cierra el slot del vendedor
+      const effective = dto.effectiveAt ? new Date(dto.effectiveAt) : new Date();
+      // Cierra el slot del vendedor en la fecha efectiva
       await trx.query(
         `
         UPDATE ${T('fantasy_roster_slot')}
-        SET active=false, valid_to=now(), updated_at=now()
+        SET active=false, valid_to=$2, updated_at=now()
         WHERE id = $1
         `,
-        [slot.id],
+        [slot.id, effective.toISOString()],
       );
 
-      // Crea slot en comprador (BENCH)
+      // Regla de autopromoción: si el slot original era starter y no BENCH, el nuevo entra con mismo slot y starter=true.
+      // Caso contrario: entra como BENCH starter=false.
+      const originalSlotRow = await trx.query(
+        `SELECT slot, starter FROM ${T('fantasy_roster_slot')} WHERE id = $1`,
+        [slot.id],
+      );
+      const originalSlot = originalSlotRow[0]?.slot ?? 'BENCH';
+      const originalStarter = !!originalSlotRow[0]?.starter;
+      const newSlot = originalStarter && originalSlot !== 'BENCH' ? originalSlot : 'BENCH';
+      const newStarter = originalStarter && originalSlot !== 'BENCH';
+
+      // Crea slot en comprador con valid_from effectiveAt y posibles starter/slot adaptados
       await trx.query(
         `
         INSERT INTO ${T('fantasy_roster_slot')}
           (fantasy_league_id, fantasy_team_id, player_id, slot, starter, active, acquisition_price, clause_value, valid_from, created_at, updated_at)
-        VALUES ($1, $2, $3, 'BENCH', false, true, $4::bigint, $4::bigint, now(), now(), now())
+        VALUES ($1, $2, $3, $6, $7, true, $4::bigint, $4::bigint, $5, now(), now())
         `,
-        [dto.fantasyLeagueId, buyer.id, dto.playerId, clause.toString()],
+        [dto.fantasyLeagueId, buyer.id, dto.playerId, clause.toString(), effective.toISOString(), newSlot, newStarter],
       );
 
       // Auditoría (transfer_transaction, fantasy)

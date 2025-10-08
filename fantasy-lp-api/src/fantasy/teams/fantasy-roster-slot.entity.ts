@@ -1,10 +1,13 @@
 // src/fantasy/teams/fantasy-roster-slot.entity.ts
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDateColumn, UpdateDateColumn, Index } from 'typeorm';
 import { FantasyLeague } from '../leagues/fantasy-league.entity';
 import { FantasyTeam } from './fantasy-team.entity';
 import { Player } from 'src/entities/player.entity';
 
 @Entity({ name: 'fantasy_roster_slot' })
+@Index('idx_roster_league_player_active', ['fantasyLeague', 'player', 'active'])
+@Index('idx_roster_league_team_active', ['fantasyLeague', 'fantasyTeam', 'active'])
+@Index('idx_roster_validity', ['validFrom', 'validTo'])
 export class FantasyRosterSlot {
   @PrimaryGeneratedColumn() id: number;
 

@@ -57,7 +57,6 @@ export class FantasyLeaguesService {
       }
     }
     // Nuevo modelo: no fijamos source_tournament_id (abarca todos los torneos de esa liga)
-    league.sourceTournamentId = null;
     return this.leagues.save(league);
   }
 
@@ -134,7 +133,6 @@ export class FantasyLeaguesService {
         league.sourceLeagueCode = (core.code || dto.sourceLeagueCode).toUpperCase();
       }
     }
-    league.sourceTournamentId = null;
     return this.leagues.save(league);
   }
 
@@ -194,17 +192,8 @@ export class FantasyLeaguesService {
       }
     }
 
-    // Nuevo modelo: aunque encontremos un activo, mantenemos sourceTournamentId en null para sumar todos los torneos.
-    league.sourceTournamentId = null;
-    if (active) {
-      league.sourceTournamentName = active.name || this.deriveTournamentName(active) || code || null;
-      league.sourceTournamentOverview = active.overviewPage || null;
-      league.sourceTournamentYear = active.year || this.deriveTournamentYear(active) || null;
-    } else {
-      league.sourceTournamentName = null;
-      league.sourceTournamentOverview = null;
-      league.sourceTournamentYear = null;
-    }
+    // Nuevo modelo: ya no persistimos torneo; sólo aseguramos code/league id.
+    // (Si se requiere metadata del split activo, podría devolverse ad-hoc sin columnas dedicadas.)
   }
 
   /**

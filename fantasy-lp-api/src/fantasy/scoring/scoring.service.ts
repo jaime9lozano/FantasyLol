@@ -56,63 +56,52 @@ export class ScoringService {
   const coreLeagueId = (league as any).sourceLeagueId ?? null;
 
   await this.ds.transaction(async (qr) => {
-    // 1) Leer stats del periodo usando RELACIÓN con Game (dentro de la transacción)
-    const pgsRepo = qr.getRepository(PlayerGameStats);
+    // 1) Upsert vectorizado de puntos del periodo
+    const cfg = league.scoringConfig ?? {};
+    const killW = Number(cfg.kill ?? 3);
+    const assistW = Number(cfg.assist ?? 2);
+    const deathW = Number(cfg.death ?? -1);
+    const cs10W = Number(cfg.cs10 ?? 0.5);
+    const winW = Number(cfg.win ?? 2);
 
-    // Usamos columnas crudas con alias, para evitar el problema de s.playerId → s.playerid
-    const statsQb = pgsRepo
-      .createQueryBuilder('s')
-      .leftJoin('s.game', 'g')
-      .where('g.datetime_utc BETWEEN :a AND :b', { a: from, b: to })
-      .select([])
-      .addSelect('s."player_id"', 'player_id')
-      .addSelect('s."game_id"', 'game_id')
-      .addSelect('s."kills"', 'kills')
-      .addSelect('s."assists"', 'assists')
-      .addSelect('s."deaths"', 'deaths')
-      .addSelect('s."cs"', 'cs')
-      .addSelect('s."player_win"', 'player_win');
+    await qr.query(
+      `WITH base_games AS (
+         SELECT g.id AS game_id
+         FROM public.game g
+         ${coreLeagueId ? `JOIN public.tournament t ON t.id = g.tournament_id` : ''}
+         WHERE g.datetime_utc BETWEEN $1 AND $2
+           ${coreLeagueId ? `AND (
+             t.league = (SELECT code FROM public.league WHERE id = $3)
+             OR t.league ILIKE (SELECT code FROM public.league WHERE id = $3) || '%'
+             OR (t.league_icon_key IS NOT NULL AND t.league_icon_key ILIKE (SELECT code FROM public.league WHERE id = $3) || '%')
+           )` : ''}
+       ),
+       stats AS (
+         SELECT pgs.player_id, pgs.game_id, pgs.kills, pgs.assists, pgs.deaths, pgs.cs, pgs.player_win
+         FROM public.player_game_stats pgs
+         JOIN base_games bg ON bg.game_id = pgs.game_id
+       )
+       INSERT INTO ${T('fantasy_player_points')} (fantasy_league_id, player_id, game_id, points)
+       SELECT $4::int AS fantasy_league_id,
+              s.player_id,
+              s.game_id,
+              (
+                COALESCE(s.kills,0) * $5 +
+                COALESCE(s.assists,0) * $6 +
+                COALESCE(s.deaths,0) * $7 +
+                FLOOR(COALESCE(s.cs,0)/10.0) * $8 +
+                (CASE WHEN s.player_win THEN 1 ELSE 0 END) * $9
+              )::numeric AS points
+       FROM stats s
+       ON CONFLICT (fantasy_league_id, player_id, game_id)
+       DO UPDATE SET points = EXCLUDED.points, updated_at = now()`,
+      coreLeagueId
+        ? [from, to, coreLeagueId, fantasyLeagueId, killW, assistW, deathW, cs10W, winW]
+        : [from, to, null, fantasyLeagueId, killW, assistW, deathW, cs10W, winW],
+    );
 
-    if (coreLeagueId) {
-      // limitar a juegos cuyos torneos pertenezcan a la liga core por code/prefijo
-      const subq = this.ds
-        .createQueryBuilder()
-        .select('t.id')
-        .from('public.tournament', 't')
-        .where(`t.league = (SELECT code FROM public.league WHERE id = :lid)`)
-        .orWhere(`t.league ILIKE (SELECT code FROM public.league WHERE id = :lid) || '%'`)
-        .orWhere(`t.league_icon_key ILIKE (SELECT code FROM public.league WHERE id = :lid) || '%'`)
-        .getQuery();
-      statsQb.andWhere(`g.tournament_id IN (${subq})`).setParameters({ lid: coreLeagueId });
-    }
-
-    const stats: Array<{
-      player_id: number;
-      game_id: number;
-      kills: number | null;
-      assists: number | null;
-      deaths: number | null;
-      cs: number | null;
-      player_win: boolean | null;
-    }> = await statsQb.getRawMany();
-
-    // 2) Upsert de puntos por jugador/partido (en el schema activo)
-    for (const s of stats) {
-      // Tu calcPoints ya es tolerante a snake/camel case
-      const points = this.calcPoints(s as any, league.scoringConfig ?? {});
-      await qr.query(
-        `
-        INSERT INTO ${T('fantasy_player_points')}
-          (fantasy_league_id, player_id, game_id, points)
-        VALUES ($1, $2, $3, $4::numeric)
-        ON CONFLICT (fantasy_league_id, player_id, game_id)
-        DO UPDATE SET points = EXCLUDED.points, updated_at = now()
-        `,
-        [fantasyLeagueId, Number(s.player_id), Number(s.game_id), points],
-      );
-    }
-
-   // 3) Agregado por equipo SOLO con puntos del periodo (join a public.game)
+    // 3) Agregado por equipo considerando pertenencia temporal (valid_from / valid_to)
+    // Un punto de un jugador en un game cuenta para el equipo que lo tenía activo y starter en ese instante.
     const teamPointsBase = `
       INSERT INTO ${T('fantasy_team_points')}
         (fantasy_league_id, fantasy_team_id, fantasy_scoring_period_id, points)
@@ -122,24 +111,25 @@ export class ScoringService {
         $1::int AS period_id,
         COALESCE(SUM(fpp.points), 0)::numeric AS points
       FROM ${T('fantasy_roster_slot')} fr
-      LEFT JOIN ${T('fantasy_player_points')} fpp
+      JOIN ${T('fantasy_player_points')} fpp
         ON fpp.fantasy_league_id = fr.fantasy_league_id
        AND fpp.player_id = fr.player_id
       JOIN public.game g ON g.id = fpp.game_id
       WHERE fr.fantasy_league_id = $2
-        AND fr.active = true
         AND fr.starter = true
+        AND fr.active = true -- slot abierto actualmente
         AND g.datetime_utc BETWEEN $3 AND $4
-    ${coreLeagueId ? `AND g.tournament_id IN (
-        SELECT t.id FROM public.tournament t
-        WHERE t.league = (SELECT code FROM public.league WHERE id = $5)
-         OR t.league ILIKE (SELECT code FROM public.league WHERE id = $5) || '%'
-         OR (t.league_icon_key IS NOT NULL AND t.league_icon_key ILIKE (SELECT code FROM public.league WHERE id = $5) || '%')
-      )` : ''}
+        AND g.datetime_utc >= fr.valid_from
+        AND (fr.valid_to IS NULL OR g.datetime_utc < fr.valid_to)
+        ${coreLeagueId ? `AND g.tournament_id IN (
+          SELECT t.id FROM public.tournament t
+          WHERE t.league = (SELECT code FROM public.league WHERE id = $5)
+           OR t.league ILIKE (SELECT code FROM public.league WHERE id = $5) || '%'
+           OR (t.league_icon_key IS NOT NULL AND t.league_icon_key ILIKE (SELECT code FROM public.league WHERE id = $5) || '%')
+        )` : ''}
       GROUP BY fr.fantasy_league_id, fr.fantasy_team_id
       ON CONFLICT (fantasy_league_id, fantasy_team_id, fantasy_scoring_period_id)
       DO UPDATE SET points = EXCLUDED.points, updated_at = now()`;
-
     const params = coreLeagueId ? [periodId, fantasyLeagueId, from, to, coreLeagueId] : [periodId, fantasyLeagueId, from, to];
     await qr.query(teamPointsBase, params);
 
@@ -203,4 +193,143 @@ export class ScoringService {
 
   return { ok: true };
 }
+
+  /**
+   * Backfill histórico de puntos de jugadores para TODOS los games de la liga core (todas sus splits/torneos).
+   * No afecta puntos de equipo (team_points) ni periodos; sólo fantasy_player_points.
+   */
+  async backfillAllPlayerPoints(fantasyLeagueId: number) {
+    const league = await this.leagues.findOne({ where: { id: fantasyLeagueId } });
+    if (!league) throw new BadRequestException('Liga no encontrada');
+    const coreLeagueId = (league as any).sourceLeagueId ?? null;
+    if (!coreLeagueId) return { ok: true, inserted: 0, updated: 0 };
+
+    const cfg = league.scoringConfig ?? {};
+    // Pesos (defaults) extraídos tal cual de calcPoints para vectorizar directamente en SQL
+    const killW = Number(cfg.kill ?? 3);
+    const assistW = Number(cfg.assist ?? 2);
+    const deathW = Number(cfg.death ?? -1);
+    const cs10W = Number(cfg.cs10 ?? 0.5);
+    const winW = Number(cfg.win ?? 2);
+
+    const result = await this.ds.transaction(async (qr) => {
+      const [row] = await qr.query(
+        `WITH code AS (SELECT code FROM public.league WHERE id = $1),
+          league_games AS (
+            SELECT g.id AS game_id
+            FROM public.game g
+            JOIN public.tournament t ON t.id = g.tournament_id
+            JOIN code c ON TRUE
+            WHERE (
+              t.league = c.code
+              OR t.league ILIKE c.code || '%'
+              OR (t.league_icon_key IS NOT NULL AND t.league_icon_key ILIKE c.code || '%')
+            )
+          ),
+          raw_stats AS (
+            SELECT pgs.player_id, pgs.game_id, pgs.kills, pgs.assists, pgs.deaths, pgs.cs, pgs.player_win
+            FROM public.player_game_stats pgs
+            JOIN league_games lg ON lg.game_id = pgs.game_id
+          ),
+          ins AS (
+            INSERT INTO ${T('fantasy_player_points')} (fantasy_league_id, player_id, game_id, points)
+            SELECT
+              $2::int AS fantasy_league_id,
+              rs.player_id,
+              rs.game_id,
+              (
+                COALESCE(rs.kills,0) * $3 +
+                COALESCE(rs.assists,0) * $4 +
+                COALESCE(rs.deaths,0) * $5 +
+                FLOOR(COALESCE(rs.cs,0) / 10.0) * $6 +
+                (CASE WHEN rs.player_win THEN 1 ELSE 0 END) * $7
+              )::numeric AS points
+            FROM raw_stats rs
+            ON CONFLICT (fantasy_league_id, player_id, game_id)
+            DO UPDATE SET points = EXCLUDED.points, updated_at = now()
+            RETURNING (xmax = 0) AS inserted
+          )
+          SELECT
+            COALESCE(COUNT(*) FILTER (WHERE inserted), 0)::int AS inserted,
+            COALESCE(COUNT(*) FILTER (WHERE NOT inserted), 0)::int AS updated
+          FROM ins`,
+        [coreLeagueId, fantasyLeagueId, killW, assistW, deathW, cs10W, winW],
+      );
+      return { inserted: Number(row?.inserted ?? 0), updated: Number(row?.updated ?? 0) };
+    });
+
+    return { ok: true, ...result };
+  }
+
+  /**
+   * Genera periodos ("jornadas") automáticamente. Estrategia default: semanas naturales (lunes 00:00 UTC - domingo 23:59:59).
+   * Si ya existen periodos no duplica.
+   */
+  async autoGenerateWeeklyPeriods(fantasyLeagueId: number, strategy: string = 'WEEKLY') {
+    const league = await this.leagues.findOne({ where: { id: fantasyLeagueId } });
+    if (!league) throw new BadRequestException('Liga no encontrada');
+
+    const coreLeagueId = (league as any).sourceLeagueId ?? null;
+    if (!coreLeagueId) return { ok: true, created: 0 };
+
+    // Rango de fechas de los games de la liga core
+    const range = await this.ds.query(
+      `WITH code AS (SELECT code FROM public.league WHERE id = $1),
+        lg AS (
+          SELECT g.datetime_utc
+          FROM public.game g
+          JOIN public.tournament t ON t.id = g.tournament_id
+          JOIN code c ON TRUE
+          WHERE (
+            t.league = c.code
+            OR t.league ILIKE c.code || '%'
+            OR (t.league_icon_key IS NOT NULL AND t.league_icon_key ILIKE c.code || '%')
+          )
+        )
+        SELECT MIN(datetime_utc) AS min_dt, MAX(datetime_utc) AS max_dt FROM lg`,
+      [coreLeagueId],
+    );
+    const minDt = range[0]?.min_dt ? new Date(range[0].min_dt) : null;
+    const maxDt = range[0]?.max_dt ? new Date(range[0].max_dt) : null;
+    if (!minDt || !maxDt) return { ok: true, created: 0 };
+
+    // Normalizar a lunes 00:00 UTC
+    function startOfWeek(d: Date): Date {
+      const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
+      const day = x.getUTCDay(); // 0=Domingo
+      const diff = (day === 0 ? -6 : 1 - day); // llevar a lunes
+      x.setUTCDate(x.getUTCDate() + diff);
+      return x;
+    }
+    const firstWeekStart = startOfWeek(minDt);
+
+    const periods: Array<{ name: string; starts: Date; ends: Date }> = [];
+    let cursor = new Date(firstWeekStart);
+    let index = 1;
+    while (cursor <= maxDt) {
+      const start = new Date(cursor);
+      const end = new Date(cursor); end.setUTCDate(end.getUTCDate() + 7); end.setUTCSeconds(end.getUTCSeconds() - 1);
+      periods.push({ name: `Week ${index}`, starts: start, ends: end });
+      cursor.setUTCDate(cursor.getUTCDate() + 7);
+      index++;
+    }
+
+    // Filtrar los que ya existen (comparando overlap por starts_at)
+    const existing: Array<{ starts_at: Date }> = await this.ds.query(
+      `SELECT starts_at FROM ${T('fantasy_scoring_period')} WHERE fantasy_league_id = $1`,
+      [fantasyLeagueId],
+    );
+    const existingSet = new Set(existing.map(r => new Date(r.starts_at).toISOString()));
+    let created = 0;
+    for (const p of periods) {
+      if (existingSet.has(p.starts.toISOString())) continue;
+      await this.ds.query(
+        `INSERT INTO ${T('fantasy_scoring_period')} (fantasy_league_id, name, starts_at, ends_at, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, now(), now())`,
+        [fantasyLeagueId, p.name, p.starts.toISOString(), p.ends.toISOString()],
+      );
+      created++;
+    }
+    return { ok: true, created };
+  }
 }

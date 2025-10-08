@@ -1,11 +1,12 @@
 // src/fantasy/scoring/fantasy-player-points.entity.ts
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDateColumn, UpdateDateColumn, Unique } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDateColumn, UpdateDateColumn, Unique, Index } from 'typeorm';
 import { FantasyLeague } from '../leagues/fantasy-league.entity';
 import { Player } from 'src/entities/player.entity';
 import { Game } from 'src/entities/game.entity';
 
 @Entity({ name: 'fantasy_player_points' })
 @Unique(['fantasyLeague', 'player', 'game'])
+@Index('idx_player_points_league_player', ['fantasyLeague', 'player'])
 export class FantasyPlayerPoints {
   @PrimaryGeneratedColumn() id: number;
 

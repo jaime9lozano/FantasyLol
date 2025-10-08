@@ -39,19 +39,8 @@ export class FantasyLeague {
   @Column({ name: 'source_league_id', type: 'int', nullable: true })
   sourceLeagueId: number | null;
 
-  // Torneo activo (tournament.id en public.tournament) que define el pool válido de jugadores/partidos.
-  @Column({ name: 'source_tournament_id', type: 'int', nullable: true })
-  sourceTournamentId: number | null;
-
-  // Metadatos cacheados del torneo (para mostrar sin más joins). Valores opcionales.
-  @Column({ name: 'source_tournament_name', type: 'text', nullable: true })
-  sourceTournamentName: string | null;
-
-  @Column({ name: 'source_tournament_overview', type: 'text', nullable: true })
-  sourceTournamentOverview: string | null;
-
-  @Column({ name: 'source_tournament_year', type: 'int', nullable: true })
-  sourceTournamentYear: number | null;
+  // Campos de torneo eliminados en el nuevo modelo (se mantiene soporte liga-completa). Reservado por compatibilidad futura.
+  // Si se necesita reintroducir metadata de un split activo, se añadiría una tabla auxiliar o vista materializada.
 
   @CreateDateColumn({ name: 'created_at' }) createdAt: Date;
   @UpdateDateColumn({ name: 'updated_at' }) updatedAt: Date;

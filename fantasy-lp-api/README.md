@@ -21,17 +21,53 @@
   <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
   [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
 
-## Description
+## Descripción
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+Backend Fantasy LoL (NestJS + TypeORM) extendido para que una liga de fantasía abarque TODOS los splits/torneos de la liga core (season-wide), con:
 
-## Project setup
+- Pool de jugadores por `sourceLeagueId` / `sourceLeagueCode` (sin `source_tournament_id`).
+- Puntos históricos y recálculo vectorizado.
+- Jornadas (periodos de scoring) automáticas semanales (lunes-domingo) o personalizadas.
+- Transferencias con validez temporal (`valid_from` / `valid_to`) y asignación de puntos al equipo dueño en el instante del game.
+- Pago de cláusula con soporte de fecha efectiva retro/futura (`effectiveAt`) y autopromoción si el jugador era titular.
+
+### Endpoints principales (fantasy)
+
+Scoring:
+- `POST /fantasy/scoring/backfill-all` `{ fantasyLeagueId }` → Inserta/actualiza todos los `fantasy_player_points` para todos los games de la core league (todas las splits).
+- `POST /fantasy/scoring/auto-periods` `{ fantasyLeagueId, strategy? }` → Genera semanas (`Week N`) sin duplicar existentes.
+- `POST /fantasy/scoring/compute` `{ fantasyLeagueId, periodId }` → Calcula puntos jugadores (periodo) y agrega `fantasy_team_points` aplicando lineup válido y penalización por lineup incompleto.
+
+Valuation / Transferencias:
+- `POST /fantasy/valuation/pay-clause` `{ fantasyLeagueId, playerId, toTeamId, effectiveAt? }` → Cierra slot antiguo (`valid_to = effectiveAt`) y crea slot nuevo `valid_from = effectiveAt`.
+  - Si el slot original era titular y no `BENCH`, el nuevo se crea mismo slot + `starter=true` (autopromoción).
+  - Si no, entra como BENCH.
+- `POST /fantasy/valuation/recalc` `{ leagueId }` → Recalcula valuaciones con media móvil (últimos 5 games) de puntos.
+
+### Modelo temporal
+`fantasy_roster_slot` mantiene la historia de pertenencia del jugador:
+- `valid_from`: instante desde el cual el jugador pertenece a ese equipo.
+- `valid_to`: null si sigue vigente. Al transferir se setea a la fecha efectiva, excluyendo games ≥ `valid_to`.
+Durante `compute`, cada game se asigna al slot que estaba activo y starter en el momento exacto (`g.datetime_utc >= valid_from AND (valid_to IS NULL OR g.datetime_utc < valid_to)`).
+
+### Performance
+- Backfill y compute usan `INSERT ... SELECT` vectorizados con `ON CONFLICT` para evitar N queries.
+- Índices añadidos:
+  - `fantasy_roster_slot`: `(fantasyLeague, player, active)`, `(fantasyLeague, fantasyTeam, active)`, `(valid_from, valid_to)`.
+  - `fantasy_player_points`: `(fantasyLeague, player)`.
+
+### Estrategias futuras (ideas)
+- Ajustar penalizaciones dinámicas por slots vacíos.
+- Métricas avanzadas (KDA normalizado, etc.) y ponderaciones dinámicas.
+- Cache / materialized views para ranking global.
+
+## Instalación
 
 ```bash
 $ npm install
 ```
 
-## Compile and run the project
+## Ejecutar
 
 ```bash
 # development
@@ -44,7 +80,7 @@ $ npm run start:dev
 $ npm run start:prod
 ```
 
-## Run tests
+## Tests
 
 ```bash
 # unit tests
@@ -57,7 +93,7 @@ $ npm run test:e2e
 $ npm run test:cov
 ```
 
-## Deployment
+## Deploy
 
 When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
 
@@ -70,7 +106,7 @@ $ mau deploy
 
 With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
 
-## Resources
+## Recursos
 
 Check out a few resources that may come in handy when working with NestJS:
 
@@ -83,16 +119,16 @@ Check out a few resources that may come in handy when working with NestJS:
 - To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
 - Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
 
-## Support
+## Soporte
 
 Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
 
-## Stay in touch
+## Contacto
 
 - Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
 - Website - [https://nestjs.com](https://nestjs.com/)
 - Twitter - [@nestframework](https://twitter.com/nestframework)
 
-## License
+## Licencia
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+MIT.

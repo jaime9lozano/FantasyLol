@@ -139,4 +139,23 @@ describe('Scoring E2E', () => {
     );
     expect(playerPoints.length).toBe(0); // no se insertó porque se filtró
   });
+
+  it('backfill-all genera puntos de jugadores históricos para la liga', async () => {
+    const { leagueId } = await createLeagueAndJoin(app, ds, 'Scoring Backfill');
+    // Antes del backfill no debe haber puntos
+    const before = await ds.query(`select count(*)::int as c from ${T('fantasy_player_points')} where fantasy_league_id = $1`, [leagueId]);
+    const beforeCount = Number(before[0]?.c ?? 0);
+    expect(beforeCount).toBe(0);
+
+    const res = await request(app.getHttpServer())
+      .post('/fantasy/scoring/backfill-all')
+      .send({ fantasyLeagueId: leagueId })
+      .expect(201);
+    expect(res.body?.ok).toBe(true);
+    expect((res.body.inserted ?? 0) + (res.body.updated ?? 0)).toBeGreaterThan(0);
+
+    const after = await ds.query(`select count(*)::int as c from ${T('fantasy_player_points')} where fantasy_league_id = $1`, [leagueId]);
+    const afterCount = Number(after[0]?.c ?? 0);
+    expect(afterCount).toBeGreaterThan(0);
+  });
 });

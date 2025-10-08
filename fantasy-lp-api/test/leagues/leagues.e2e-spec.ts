@@ -104,10 +104,9 @@ describe('Leagues E2E', () => {
     expect(res.body?.id).toBeTruthy();
     const leagueId = res.body.id;
 
-    // Consultamos en BD valores persistidos
-      const [row] = await ds.query(`SELECT source_league_code, source_league_id, source_tournament_id FROM ${T('fantasy_league')} WHERE id = $1`, [leagueId]);
-      expect(row?.source_league_id).toBeTruthy();
-      expect(row?.source_tournament_id).toBeNull();
-      expect(row?.source_league_code).toBe(code); // debe mantenerse en mayúsculas
+    // Consultamos en BD valores persistidos (ya no existe source_tournament_id)
+    const [row] = await ds.query(`SELECT source_league_code, source_league_id FROM ${T('fantasy_league')} WHERE id = $1`, [leagueId]);
+    expect(row?.source_league_id).toBeTruthy();
+    expect(row?.source_league_code).toBe(code); // debe mantenerse en mayúsculas
   });
 });
