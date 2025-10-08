@@ -10,6 +10,7 @@ import { PlaceBidDto } from './dto/place-bid.dto';
 import { CreateListingDto } from './dto/create-listing.dto';
 import { FantasyLeague } from '../leagues/fantasy-league.entity';
 import { FantasyPlayerValuation } from '../valuation/fantasy-player-valuation.entity';
+import { MarketCycle } from './market-cycle.entity';
 import { T } from '../../database/schema.util';
 import { assertPlayerEligible } from '../leagues/league-pool.util';
 
@@ -18,11 +19,12 @@ export class MarketService {
   constructor(
     @InjectRepository(MarketOrder) private orders: Repository<MarketOrder>,
     @InjectRepository(MarketBid) private bids: Repository<MarketBid>,
-    @InjectRepository(FantasyTeam) private teams: Repository<FantasyTeam>,
+  @InjectRepository(FantasyTeam) private teams: Repository<FantasyTeam>,
     @InjectRepository(FantasyRosterSlot) private roster: Repository<FantasyRosterSlot>,
     @InjectRepository(FantasyLeague) private leagues: Repository<FantasyLeague>,
     @InjectRepository(FantasyPlayerValuation) private valuations: Repository<FantasyPlayerValuation>,
     @InjectDataSource() private ds: DataSource,
+    @InjectRepository(MarketCycle) private cycles: Repository<MarketCycle>,
   ) {}
 
   private parseTime(t: string): { hh: number; mm: number } {
@@ -356,5 +358,116 @@ export class MarketService {
 
       return { ok: true, processed: orders.length, settled: settledCount };
     });
+  }
+
+  /**
+   * Inicia un nuevo ciclo de mercado seleccionando N jugadores libres aleatorios (sin repetición del ciclo anterior si es posible).
+   */
+  async startNewCycle(fantasyLeagueId: number, count = 6, now = new Date()): Promise<{ cycleId: number; playerIds: number[] }> {
+    return this.ds.transaction(async (trx) => {
+      // Último ciclo para evitar repetir jugadores recientes
+      const [lastCycle] = await trx.query(
+        `SELECT id FROM ${T('market_cycle')} WHERE fantasy_league_id = $1 ORDER BY id DESC LIMIT 1`,
+        [fantasyLeagueId],
+      );
+      const lastCycleId: number | null = lastCycle?.id ?? null;
+      const lastPlayers: number[] = lastCycleId
+        ? (
+            await trx.query(
+              `SELECT player_id::bigint AS pid FROM ${T('market_order')} WHERE cycle_id = $1`,
+              [lastCycleId],
+            )
+          ).map((r: any) => Number(r.pid))
+        : [];
+
+      // Jugadores ya en roster activo (no son libres)
+      const takenRows = await trx.query(
+        `SELECT player_id::bigint AS pid FROM ${T('fantasy_roster_slot')} WHERE fantasy_league_id = $1 AND active = true`,
+        [fantasyLeagueId],
+      );
+      const taken = new Set<number>(takenRows.map((r: any) => Number(r.pid)));
+
+      // Candidatos libres: jugadores del pool de la core league (si la liga tiene source_league_id) o todos los players.
+      const leagueRow = await trx.query(`SELECT source_league_id FROM ${T('fantasy_league')} WHERE id = $1`, [fantasyLeagueId]);
+      const sourceLeagueId: number | null = leagueRow[0]?.source_league_id ?? null;
+      const candidateRows = await trx.query(
+        sourceLeagueId
+          ? `SELECT p.id::bigint AS pid
+             FROM public.player p
+             JOIN public.team_player_membership tpm ON tpm.player_id = p.id AND tpm.is_current = true
+             JOIN public.team t ON t.id = tpm.team_id AND t.league_id = $1
+             ORDER BY random() LIMIT 500`
+          : `SELECT p.id::bigint AS pid FROM public.player p ORDER BY random() LIMIT 500`,
+        sourceLeagueId ? [sourceLeagueId] : [],
+      );
+      const chosen: number[] = [];
+
+      const already = new Set<number>();
+      for (const row of candidateRows) {
+        const pid = Number(row.pid);
+        if (taken.has(pid)) continue; // ya en un equipo
+        if (lastPlayers.includes(pid)) continue; // evitar repetición inmediata
+        if (already.has(pid)) continue;
+        already.add(pid);
+        chosen.push(pid);
+        if (chosen.length >= count) break;
+      }
+      // Si no alcanzamos count, permitir algunos que estaban en el último ciclo (sin duplicar seleccionados hasta ahora)
+      if (chosen.length < count) {
+        for (const row of candidateRows) {
+          if (chosen.length >= count) break;
+            const pid = Number(row.pid);
+            if (taken.has(pid)) continue;
+            if (already.has(pid)) continue;
+            already.add(pid);
+            chosen.push(pid);
+        }
+      }
+
+      if (chosen.length === 0) throw new BadRequestException('No hay jugadores libres para el mercado');
+
+      // Asegurar valuación base para elegidos si no existe
+      for (const pid of chosen) {
+        await trx.query(
+          `INSERT INTO ${T('fantasy_player_valuation')} (fantasy_league_id, player_id, current_value, last_change, calc_date)
+           VALUES ($1, $2, 0, 0, now()::date)
+           ON CONFLICT DO NOTHING`,
+          [fantasyLeagueId, pid],
+        );
+      }
+
+      const cycle = this.cycles.create({
+        fantasyLeague: { id: fantasyLeagueId } as any,
+        opensAt: now,
+        closesAt: new Date(now.getTime() + 24 * 3600 * 1000),
+      });
+      const saved = await this.cycles.save(cycle);
+
+      // Crear órdenes AUCTION asociadas
+      for (const pid of chosen) {
+        await trx.query(
+          `INSERT INTO ${T('market_order')} (fantasy_league_id, player_id, owner_team_id, type, status, min_price, opens_at, closes_at, cycle_id)
+           VALUES ($1, $2, NULL, 'AUCTION', 'OPEN', 0, $3, $4, $5)`,
+          [fantasyLeagueId, pid, now, cycle.closesAt, saved.id],
+        );
+      }
+      return { cycleId: saved.id, playerIds: chosen };
+    });
+  }
+
+  /**
+   * Cierra el ciclo activo (si su closesAt <= now) liquidando subastas y abre el siguiente automáticamente.
+   */
+  async settleAndRotate(fantasyLeagueId: number, now = new Date()) {
+    // 1) Liquidar órdenes expiradas
+    await this.closeDailyAuctions(fantasyLeagueId, now);
+    // 2) Verificar si el último ciclo ya expiró
+    const last = await this.cycles.find({ where: { fantasyLeague: { id: fantasyLeagueId } as any }, order: { id: 'DESC' }, take: 1 });
+    if (!last.length) return this.startNewCycle(fantasyLeagueId, 6, now);
+    const cycle = last[0];
+    if (cycle.closesAt <= now) {
+      return this.startNewCycle(fantasyLeagueId, 6, now);
+    }
+    return { cycleId: cycle.id, playerIds: [] }; // ya hay ciclo abierto
   }
 }

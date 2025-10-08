@@ -29,11 +29,28 @@ export async function resetFantasyDb(ds: DataSource): Promise<void> {
           created_at timestamptz DEFAULT now()
         );
       EXCEPTION WHEN others THEN NULL; END;
+      BEGIN
+        CREATE TABLE IF NOT EXISTS ${T('market_cycle')} (
+          id serial PRIMARY KEY,
+          fantasy_league_id int NOT NULL REFERENCES ${T('fantasy_league')}(id) ON DELETE CASCADE,
+          opens_at timestamptz NOT NULL,
+          closes_at timestamptz NOT NULL,
+          created_at timestamptz DEFAULT now(),
+          updated_at timestamptz DEFAULT now()
+        );
+      EXCEPTION WHEN others THEN NULL; END;
+      BEGIN
+        ALTER TABLE ${T('market_order')} ADD COLUMN IF NOT EXISTS cycle_id int NULL REFERENCES ${T('market_cycle')}(id) ON DELETE SET NULL;
+      EXCEPTION WHEN others THEN NULL; END;
+      BEGIN
+        ALTER TABLE ${T('market_order')} ALTER COLUMN owner_team_id DROP NOT NULL;
+      EXCEPTION WHEN others THEN NULL; END;
     END $$;`);
     await qr.query(`
       truncate table
         ${T('market_bid')},
-        ${T('market_order')},
+  ${T('market_order')},
+  ${T('market_cycle')},
         ${T('transfer_transaction')},
         ${T('fantasy_budget_ledger')},
         ${T('transfer_offer')},

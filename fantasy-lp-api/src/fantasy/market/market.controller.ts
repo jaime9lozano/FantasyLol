@@ -24,4 +24,14 @@ export class MarketController {
   close(@Query('leagueId') leagueId: string) {
     return this.svc.closeDailyAuctions(Number(leagueId));
   }
+
+  @Post('cycle/start')
+  startCycle(@Query('leagueId') leagueId: string) {
+    return this.svc.startNewCycle(Number(leagueId));
+  }
+
+  @Post('cycle/rotate')
+  rotate(@Query('leagueId') leagueId: string) {
+    return this.svc.settleAndRotate(Number(leagueId));
+  }
 }

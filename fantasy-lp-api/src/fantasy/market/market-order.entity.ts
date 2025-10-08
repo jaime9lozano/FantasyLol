@@ -4,6 +4,7 @@ import { FantasyLeague } from '../leagues/fantasy-league.entity';
 import { FantasyTeam } from '../teams/fantasy-team.entity';
 import { Player } from 'src/entities/player.entity';
 import { MarketBid } from './market-bid.entity';
+import { MarketCycle } from './market-cycle.entity';
 
 export type OrderType = 'AUCTION'|'LISTING';
 export type OrderStatus = 'OPEN'|'CLOSED'|'CANCELLED'|'SETTLED';
@@ -15,6 +16,10 @@ export class MarketOrder {
   @ManyToOne(() => FantasyLeague, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'fantasy_league_id' })
   fantasyLeague: FantasyLeague;
+
+  @ManyToOne(() => MarketCycle, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'cycle_id' })
+  cycle?: MarketCycle;
 
   @ManyToOne(() => Player)
   @JoinColumn({ name: 'player_id' })

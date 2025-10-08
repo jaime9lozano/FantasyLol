@@ -21,6 +21,7 @@ import { FantasyTeamPoints } from "src/fantasy/scoring/fantasy-team-points.entit
 import { FantasyRosterSlot } from "src/fantasy/teams/fantasy-roster-slot.entity";
 import { FantasyTeam } from "src/fantasy/teams/fantasy-team.entity";
 import { FantasyPlayerValuation } from "src/fantasy/valuation/fantasy-player-valuation.entity";
+import { MarketCycle } from 'src/fantasy/market/market-cycle.entity';
 
 
 @Module({
@@ -48,7 +49,7 @@ import { FantasyPlayerValuation } from "src/fantasy/valuation/fantasy-player-val
             League, Tournament, Role, Team, Player, Game, PlayerGameStats, TeamPlayerMembership,
             // Fantasy (van a "test" por schema de conexión)
             FantasyManager, FantasyLeague, FantasyTeam, FantasyRosterSlot,
-            MarketOrder, MarketBid,
+            MarketOrder, MarketBid, MarketCycle,
             TransferOffer, TransferTransaction,
             FantasyScoringPeriod, FantasyPlayerPoints, FantasyTeamPoints,
             FantasyPlayerValuation,
