@@ -30,6 +30,10 @@ Backend Fantasy LoL (NestJS + TypeORM) extendido para que una liga de fantasía 
 - Jornadas (periodos de scoring) automáticas semanales (lunes-domingo) o personalizadas.
 - Transferencias con validez temporal (`valid_from` / `valid_to`) y asignación de puntos al equipo dueño en el instante del game.
 - Pago de cláusula con soporte de fecha efectiva retro/futura (`effectiveAt`) y autopromoción si el jugador era titular.
+ - Configuración económica dinámica (`economic_config`) para amortiguación de valuaciones, recompensas por jornada, decay por inactividad y multiplicador de cláusula.
+ - Distribución automática de recompensas al ejecutar compute de un periodo.
+ - Ledger de presupuesto auditable para todas las transacciones económicas.
+ - Endpoint de snapshot económico consolidado.
 
 ### Endpoints principales (fantasy)
 
@@ -43,6 +47,11 @@ Valuation / Transferencias:
   - Si el slot original era titular y no `BENCH`, el nuevo se crea mismo slot + `starter=true` (autopromoción).
   - Si no, entra como BENCH.
 - `POST /fantasy/valuation/recalc` `{ leagueId }` → Recalcula valuaciones con media móvil (últimos 5 games) de puntos.
+Economía / Config:
+- `PATCH /fantasy/leagues/:id/economic-config` Body parcial → Actualiza campos del JSON económico sin sobrescribir el resto.
+- (Interno dentro de `compute`) Distribución de recompensas según ranking del periodo si `economic_config.rewards.enabled`.
+Snapshot:
+- `GET /fantasy/valuation/snapshot?leagueId=...` → Devuelve visión económica (equipos, presupuestos, top jugadores, totales, config vigente).
 
 ### Modelo temporal
 `fantasy_roster_slot` mantiene la historia de pertenencia del jugador:
@@ -60,6 +69,123 @@ Durante `compute`, cada game se asigna al slot que estaba activo y starter en el
 - Ajustar penalizaciones dinámicas por slots vacíos.
 - Métricas avanzadas (KDA normalizado, etc.) y ponderaciones dinámicas.
 - Cache / materialized views para ranking global.
+ - Endpoint de listado de ledger con filtros (pendiente).
+
+## Economic Config (`economic_config`)
+
+Campo JSON almacenado en `fantasy_league.economic_config` que controla la economía. Ejemplo:
+
+```json
+{
+  "valuation": {
+    "windowGames": 5,
+    "baseWeight": 1.0,
+    "recentWeight": 1.3,
+    "dampeningFactor": 0.15,   // amortigua subidas bruscas
+    "inactivityDecayPerWeek": 0.05, // reduce valor si el jugador no disputa games
+    "minValue": 50,
+    "maxValue": 2000
+  },
+  "clause": { "multiplier": 1.35 },
+  "rewards": {
+    "enabled": true,
+    "distribution": [500, 250, 125], // premios a 1º, 2º, 3º del periodo
+    "type": "PERIOD_POINTS"          // (futuro) podría soportar otras métricas
+  },
+  "budget": { "initial": 5000 }
+}
+```
+
+Notas:
+1. Si un campo no se envía en el PATCH se mantiene el valor previo.
+2. Los límites `minValue` / `maxValue` cortan el resultado final tras dampening & decay.
+3. `inactivityDecayPerWeek` se aplica por semana sin games jugados en la ventana.
+
+## Ledger Económico
+
+Tabla (p.ej. `fantasy_budget_ledger`) que registra toda mutación de presupuesto:
+
+- `id`
+- `fantasy_league_id`
+- `fantasy_team_id`
+- `delta` (positivo ingreso / negativo gasto)
+- `balance_after`
+- `type` (ej: `CLAUSE_PAYMENT`, `REWARD_PERIOD`, `MANUAL_ADJUST` ...)
+- `metadata` JSON (detalle: jugador, periodo, ranking, etc.)
+- `created_at`
+
+Fuentes actuales de entradas:
+1. Pago de cláusula (`CLAUSE_PAYMENT`): gasto al equipo comprador (y opcional ingreso al vendedor si lo modelas más adelante).
+2. Recompensas de scoring (`REWARD_PERIOD`).
+3. Ajustes manuales (si agregas un servicio futuro que llame al BudgetService).
+
+Ventajas: auditoría, posibilidad de reconstruir saldo, analytics económicas.
+
+## Snapshot Económico
+
+`GET /fantasy/valuation/snapshot?leagueId=...` devuelve (estructura aproximada):
+
+```jsonc
+{
+  "leagueId": 1,
+  "config": { ...economic_config vigente... },
+  "teams": [
+    { "id": 10, "name": "Team A", "budget": 4175, "rosterValue": 5630, "totalLedgerEntries": 8 },
+    { "id": 11, "name": "Team B", "budget": 5025, "rosterValue": 4710, "totalLedgerEntries": 6 }
+  ],
+  "topPlayers": [ { "playerId": 123, "value": 940, "teamId": 10 }, ... ],
+  "totals": { "leagueBudget": 9200, "leagueRosterValue": 10340 }
+}
+```
+
+Uso principal: dashboards, validación rápida tras recálculos y monitoreo de distribución de valor.
+
+## Flujo de Cómputo de un Periodo (Resumido)
+
+1. `compute` calcula puntos jugadores (INSERT SELECT / UPSERT).
+2. Agrega a nivel equipo considerando lineup válido y penalizaciones.
+3. Inserta / actualiza `fantasy_team_points` del periodo.
+4. Reparte recompensas (si config activa) y crea entradas en ledger.
+5. (Opcional) disparar snapshot en el frontend tras la respuesta para refrescar panel económico.
+
+## Tests E2E Relevantes
+
+- Transfer temporal (`transfer-weeks.e2e-spec.ts`): valida asignación de puntos según `valid_from`/`valid_to`.
+- Auto periodos (`scoring.e2e-spec.ts` / `auto-periods`): generación sin duplicados.
+- Recompensas (`scoring-rewards.e2e-spec.ts`): distribución y tolerancia dataset.
+- Clausula y autopromoción (`valuation-clause-pricing.e2e-spec.ts`).
+- Config económica (`economic-config.e2e-spec.ts`).
+- Snapshot (`snapshot.e2e-spec.ts`).
+
+## Roadmap Breve
+
+- Endpoint GET paginado del ledger con filtros (por tipo, fecha, equipo).
+- Cálculo de clausula dinámico (por volatilidad / varianza reciente).
+- Cache / materialized views para snapshot y ranking.
+- Métricas avanzadas (KDA ponderado, participación en kills, etc.).
+- Integración de marketplace / pujas avanzadas (ya hay entidades base de market/offer).
+
+## Contribuir
+
+1. Crear rama feature.
+2. Añadir/actualizar tests E2E si cambias reglas económicas o scoring.
+3. Ejecutar `npm run test:e2e` antes de PR.
+4. Describir en PR cualquier ajuste a `economic_config` para actualizar docs.
+
+## FAQ Rápido
+
+**¿Por qué las recompensas no aparecen tras compute?**
+Probablemente la distribución está desactivada (`rewards.enabled=false`) o el periodo no tiene puntos aún (sin games asociados).
+
+**¿Por qué el valor de un jugador bajó sin jugar?**
+Se aplica `inactivityDecayPerWeek` sobre su valuación al no registrar games recientes.
+
+**¿Cómo limitar inflación de valuaciones?**
+Usa `dampeningFactor` y `maxValue`; el dampening suaviza subidas ligadas a rachas cortas.
+
+**¿Puedo recalcular todo desde cero?**
+Sí: `backfill-all` (puntos) → `recalc` (valuaciones) → `compute` por cada periodo → snapshot.
+
 
 ## Instalación
 
