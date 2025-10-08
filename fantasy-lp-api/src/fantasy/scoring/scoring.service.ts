@@ -8,6 +8,7 @@ import { T } from 'src/database/schema.util';
 import { PlayerGameStats } from 'src/entities/player-game-stats.entity';
 import { FantasyScoringPeriod } from './fantasy-scoring-period.entity';
 import { FantasyTeamPoints } from './fantasy-team-points.entity';
+import { ScoringRewardsService } from './scoring-rewards.service';
 
 @Injectable()
 export class ScoringService {
@@ -17,6 +18,7 @@ export class ScoringService {
     @InjectRepository(FantasyTeamPoints) private tpoints: Repository<FantasyTeamPoints>,
     @InjectRepository(PlayerGameStats) private pgs: Repository<PlayerGameStats>,
     @InjectDataSource() private ds: DataSource,
+    private rewards: ScoringRewardsService,
   ) {}
 
  private calcPoints(stats: any, cfg: any): number {
@@ -191,6 +193,13 @@ export class ScoringService {
     );
   });
 
+  // Tras computar puntos, otorgar recompensas monetarias de jornada
+  try {
+    await this.rewards.rewardPeriod(fantasyLeagueId, periodId);
+  } catch (e) {
+    // No interrumpir compute por fallo en rewards
+    // Podrías loggear con logger real
+  }
   return { ok: true };
 }
 

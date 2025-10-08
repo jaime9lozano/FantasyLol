@@ -11,11 +11,31 @@ export async function resetFantasyDb(ds: DataSource): Promise<void> {
   const qr = ds.createQueryRunner();
   await qr.connect();
   try {
+    // Asegurar columnas / tablas nuevas en entorno test sin migraciones formales
+    await qr.query(`DO $$ BEGIN
+      BEGIN
+        ALTER TABLE ${T('fantasy_league')} ADD COLUMN IF NOT EXISTS economic_config jsonb NOT NULL DEFAULT '{}'::jsonb;
+      EXCEPTION WHEN others THEN NULL; END;
+      BEGIN
+        CREATE TABLE IF NOT EXISTS ${T('fantasy_budget_ledger')} (
+          id bigserial PRIMARY KEY,
+          fantasy_league_id int NOT NULL,
+          fantasy_team_id int NOT NULL,
+            type text NOT NULL,
+          delta bigint NOT NULL,
+          balance_after bigint NOT NULL,
+          ref_id int NULL,
+          metadata jsonb DEFAULT '{}'::jsonb,
+          created_at timestamptz DEFAULT now()
+        );
+      EXCEPTION WHEN others THEN NULL; END;
+    END $$;`);
     await qr.query(`
       truncate table
         ${T('market_bid')},
         ${T('market_order')},
         ${T('transfer_transaction')},
+        ${T('fantasy_budget_ledger')},
         ${T('transfer_offer')},
         ${T('fantasy_player_points')},
         ${T('fantasy_team_points')},

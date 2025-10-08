@@ -31,6 +31,9 @@ export class FantasyLeague {
   @Column({ name: 'roster_config', type: 'jsonb', default: () => `'{"slots":["TOP","JNG","MID","ADC","SUP"],"bench":2}'` })
   rosterConfig: { slots: string[]; bench: number };
 
+  @Column({ name: 'economic_config', type: 'jsonb', nullable: true, default: () => `'{}'` })
+  economicConfig: any;
+
   // Código de la liga (ej: 'LEC','LCK','LPL') sobre la que se basa este fantasy.
   @Column({ name: 'source_league_code', type: 'text', nullable: true })
   sourceLeagueCode: string | null;

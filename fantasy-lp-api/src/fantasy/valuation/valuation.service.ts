@@ -8,6 +8,7 @@ import { FantasyTeam } from '../teams/fantasy-team.entity';
 import { FantasyLeague } from '../leagues/fantasy-league.entity';
 import { PayClauseDto } from './dto/pay-clause.dto';
 import { T } from '../../database/schema.util';
+import { BudgetService } from '../economy/budget.service';
 import { assertPlayerEligible } from '../leagues/league-pool.util';
 
 @Injectable()
@@ -18,6 +19,7 @@ export class ValuationService {
     @InjectRepository(FantasyTeam) private teams: Repository<FantasyTeam>,
     @InjectRepository(FantasyLeague) private leagues: Repository<FantasyLeague>,
     @InjectDataSource() private ds: DataSource,
+    private budget: BudgetService,
   ) {}
 
   async payClause(dto: PayClauseDto) {
@@ -79,16 +81,11 @@ export class ValuationService {
       const available = BigInt(buyer.br) - BigInt(buyer.bz);
       if (available < clause) throw new BadRequestException('Saldo insuficiente');
 
-      // Descuenta budget_remaining del comprador
-      await trx.query(
-        `
-        UPDATE ${T('fantasy_team')}
-        SET budget_remaining = budget_remaining - $1::bigint,
-            updated_at=now()
-        WHERE id = $2
-        `,
-        [clause.toString(), buyer.id],
-      );
+      // Registrar en ledger (delta negativo)
+      const newBal = BigInt(buyer.br) - clause;
+      if (newBal < 0n) throw new BadRequestException('Saldo insuficiente');
+      await trx.query(`UPDATE ${T('fantasy_team')} SET budget_remaining = $3::bigint, updated_at = now() WHERE id = $1 AND fantasy_league_id = $2`, [buyer.id, dto.fantasyLeagueId, newBal.toString()]);
+      await trx.query(`INSERT INTO ${T('fantasy_budget_ledger')} (fantasy_league_id, fantasy_team_id, type, delta, balance_after, ref_id, metadata, created_at) VALUES ($1,$2,'CLAUSE_PAYMENT',-$3::bigint,$4::bigint,NULL,$5::jsonb, now())`, [dto.fantasyLeagueId, buyer.id, clause.toString(), newBal.toString(), JSON.stringify({ playerId: dto.playerId })]);
 
       const effective = dto.effectiveAt ? new Date(dto.effectiveAt) : new Date();
       // Cierra el slot del vendedor en la fecha efectiva
@@ -157,26 +154,96 @@ export class ValuationService {
       `,
       [fantasyLeagueId],
     );
-
-    const min = 250_000, max = 50_000_000;
+    // Número de periodos finalizados (ends_at <= asOf) para amortiguar inflación de valores.
+    const [pc] = await this.ds.query(
+      `SELECT COUNT(*)::int AS c FROM ${T('fantasy_scoring_period')} WHERE fantasy_league_id = $1 AND ends_at <= $2`,
+      [fantasyLeagueId, asOf.toISOString()],
+    );
+    const periodsCompleted = Number(pc?.c ?? 0);
+    // Fórmula escalable:
+    // base_linear = 250k + 180k * avg_points
+    // boost cuadrático a partir de 20 puntos: + 50k * (max(avg_points-20,0))^2
+    // hard cap elevado a 200M para jugadores élite.
+  // Cargar configuración económica
+  const [econRow] = await this.ds.query(`SELECT economic_config FROM ${T('fantasy_league')} WHERE id = $1`, [fantasyLeagueId]);
+  const econ = econRow?.economic_config || {};
+  const valCfg = econ.valuation || {};
+  const dampCfg = econ.dampening || {};
+  const inactCfg = econ.inactivity || {};
+  const min = Number(valCfg.min ?? 250_000);
+  const max = Number(valCfg.hardCap ?? 200_000_000);
+  const linearBase = Number(valCfg.linearBase ?? 250_000);
+  const linearPerPoint = Number(valCfg.linearPerPoint ?? 180_000);
+  const quadTh = Number(valCfg.quadraticThreshold ?? 20);
+  const quadFactor = Number(valCfg.quadraticFactor ?? 50_000);
+  const baseDiv = Number(dampCfg.baseDivisor ?? 1);
+  const perPeriod = Number(dampCfg.perPeriod ?? 0.1);
+  const maxFactor = Number(dampCfg.maxFactor ?? 4);
+  const idleThreshold = Number(inactCfg.periodsWithoutGameForDecay ?? 2);
+  const idleDecayPer = Number(inactCfg.decayPercentPerExtraPeriod ?? 0.10); // 0.10 => 10%
+  const idleDecayMax = Number(inactCfg.maxDecayPercent ?? 0.50); // 50%
+    const today = asOf.toISOString().slice(0, 10);
     for (const r of rows) {
-      const raw = Math.round(250_000 + 120_000 * (r.avg_points ?? 0));
+      const ap = r.avg_points ?? 0;
+      const linear = linearBase + linearPerPoint * ap;
+      const quad = ap > quadTh ? quadFactor * Math.pow(ap - quadTh, 2) : 0;
+  let raw = Math.round(linear + quad);
+      // Amortiguación configurable
+      let damp = baseDiv + periodsCompleted * perPeriod;
+      if (damp > maxFactor) damp = maxFactor;
+      raw = Math.round(raw / damp);
+      // Penalización por inactividad: calcular periodos idle
+      // Buscar último game de ese jugador (rápido usando fpp + game)
+      const [lastGameRow] = await this.ds.query(
+        `SELECT MAX(g.datetime_utc) AS last_dt
+         FROM ${T('fantasy_player_points')} fpp
+         JOIN public.game g ON g.id = fpp.game_id
+         WHERE fpp.fantasy_league_id = $1 AND fpp.player_id = $2`,
+        [fantasyLeagueId, r.player_id],
+      );
+      let decayFactor = 0;
+      if (lastGameRow?.last_dt) {
+        // Calcular en qué periodo cayó ese last_dt
+        const [periodIdxRow] = await this.ds.query(
+          `SELECT COUNT(*)::int AS completed_before
+           FROM ${T('fantasy_scoring_period')}
+           WHERE fantasy_league_id = $1 AND ends_at <= $2`,
+          [fantasyLeagueId, new Date(lastGameRow.last_dt).toISOString()],
+        );
+        const lastPeriodIndex = Number(periodIdxRow?.completed_before ?? 0); // número de periodos completados hasta esa fecha
+        const idle = periodsCompleted - lastPeriodIndex;
+        if (idle >= idleThreshold) {
+          const extra = idle - idleThreshold + 1;
+            const totalDecay = Math.min(extra * idleDecayPer, idleDecayMax);
+          decayFactor = totalDecay;
+          raw = Math.round(raw * (1 - totalDecay));
+        }
+      }
       const value = Math.max(min, Math.min(max, raw));
-
       await this.ds.query(
-        `
-        INSERT INTO ${T('fantasy_player_valuation')}
-          (fantasy_league_id, player_id, current_value, last_change, calc_date)
-        VALUES ($1, $2, $3, 0, $4)
-        ON CONFLICT (fantasy_league_id, player_id)
-        DO UPDATE
-        SET current_value = EXCLUDED.current_value,
-            updated_at   = now(),
-            calc_date    = EXCLUDED.calc_date
-        `,
-        [fantasyLeagueId, r.player_id, value, asOf.toISOString().slice(0, 10)],
+        `INSERT INTO ${T('fantasy_player_valuation')} (fantasy_league_id, player_id, current_value, last_change, calc_date)
+         VALUES ($1, $2, $3::bigint, 0, $4)
+         ON CONFLICT (fantasy_league_id, player_id)
+         DO UPDATE SET current_value = EXCLUDED.current_value, updated_at = now(), calc_date = EXCLUDED.calc_date`,
+        [fantasyLeagueId, r.player_id, value, today],
       );
     }
-    return { ok: true, updated: rows.length };
+
+    // Propagar clause_value a roster slots activos abiertos (valid_to IS NULL) acorde a multiplier de la liga.
+    const [league] = await this.ds.query(`SELECT clause_multiplier FROM ${T('fantasy_league')} WHERE id = $1`, [fantasyLeagueId]);
+    const mult = Number(league?.clause_multiplier ?? 1.5);
+    await this.ds.query(
+      `UPDATE ${T('fantasy_roster_slot')} fr
+       SET clause_value = ROUND(v.current_value::numeric * $2)::bigint,
+           updated_at = now()
+       FROM ${T('fantasy_player_valuation')} v
+       WHERE fr.fantasy_league_id = $1
+         AND fr.player_id = v.player_id
+         AND fr.active = true
+         AND fr.valid_to IS NULL`,
+      [fantasyLeagueId, mult],
+    );
+
+    return { ok: true, updated: rows.length, multiplier: mult };
   }
 }

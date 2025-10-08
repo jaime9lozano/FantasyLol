@@ -25,10 +25,4 @@ export class ScoringController {
   autoPeriods(@Body() dto: { fantasyLeagueId: number; strategy?: string }) {
     return this.svc.autoGenerateWeeklyPeriods(dto.fantasyLeagueId, dto.strategy);
   }
-
-  @Post('auto-periods')
-  @HttpCode(HttpStatus.CREATED)
-  autoGeneratePeriods(@Body() dto: { fantasyLeagueId: number; strategy?: string }) {
-    return this.svc.autoGenerateWeeklyPeriods(dto.fantasyLeagueId, dto.strategy);
-  }
 }
