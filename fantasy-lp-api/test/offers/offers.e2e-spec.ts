@@ -64,4 +64,6 @@ describe('Offers E2E', () => {
     );
     expect(owned).toBeTruthy();
   });
+
+  // Caso negativo de elegibilidad por torneo se elimina con modelo basado en league_id
 });

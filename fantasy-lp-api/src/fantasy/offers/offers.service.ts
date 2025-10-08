@@ -9,6 +9,7 @@ import { FantasyTeam } from '../teams/fantasy-team.entity';
 import { CreateOfferDto } from './dto/create-offer.dto';
 import { RespondOfferDto } from './dto/respond-offer.dto';
 import { T } from '../../database/schema.util';
+import { assertPlayerEligible } from '../leagues/league-pool.util';
 
 @Injectable()
 export class OffersService {
@@ -31,6 +32,9 @@ export class OffersService {
       },
     });
     if (!slot) throw new BadRequestException('El jugador no pertenece al equipo objetivo');
+
+    // Verifica elegibilidad (el jugador debe pertenecer al pool del torneo activo de la liga)
+    await assertPlayerEligible(this.ds, dto.fantasyLeagueId, dto.playerId, 'offer.create');
 
     const offer = this.offers.create({
       fantasyLeague: { id: dto.fantasyLeagueId } as any,
@@ -76,7 +80,10 @@ export class OffersService {
         return { status: 'REJECTED' };
       }
 
-      // Equipo comprador (bloqueo)
+  // Verifica elegibilidad antes de transferir (por si cambió el torneo en medio)
+  await assertPlayerEligible(this.ds, offer.fantasy_league_id, offer.player_id, 'offer.respond');
+
+  // Equipo comprador (bloqueo)
       const buyers = await trx.query(
         `
         SELECT id, budget_remaining::bigint AS br, budget_reserved::bigint AS bz

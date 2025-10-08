@@ -11,6 +11,7 @@ import { CreateListingDto } from './dto/create-listing.dto';
 import { FantasyLeague } from '../leagues/fantasy-league.entity';
 import { FantasyPlayerValuation } from '../valuation/fantasy-player-valuation.entity';
 import { T } from '../../database/schema.util';
+import { assertPlayerEligible } from '../leagues/league-pool.util';
 
 @Injectable()
 export class MarketService {
@@ -41,8 +42,11 @@ export class MarketService {
     });
     if (!slot) throw new BadRequestException('Jugador no pertenece a ese equipo en esta liga');
 
-    const league = await this.leagues.findOne({ where: { id: dto.fantasyLeagueId } });
+  const league = await this.leagues.findOne({ where: { id: dto.fantasyLeagueId } });
     if (!league) throw new BadRequestException('Liga inválida');
+
+  // Verificar elegibilidad respecto al torneo activo
+  await assertPlayerEligible(this.ds, league.id, dto.playerId, 'createListing');
 
     const now = new Date();
     const { hh, mm } = this.parseTime(league.marketCloseTime);
@@ -79,7 +83,9 @@ export class MarketService {
         `,
         [dto.marketOrderId],
       );
-      if (orderRows.length === 0) throw new BadRequestException('Orden no disponible');
+  if (orderRows.length === 0) throw new BadRequestException('Orden no disponible');
+  // Verificar elegibilidad del jugador asociado a la orden (por si cambió el torneo en medio).
+  await assertPlayerEligible(this.ds, orderRows[0].fantasy_league_id, orderRows[0].player_id, 'placeBid');
 
       const order = orderRows[0];
       const leagueId: number = order.fantasy_league_id;

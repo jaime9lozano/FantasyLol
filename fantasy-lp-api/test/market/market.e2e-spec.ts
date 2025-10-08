@@ -73,4 +73,6 @@ describe('Market E2E', () => {
     );
     expect(owned).toBeTruthy();
   });
+
+  // El test de inelegibilidad por cambio de torneo ya no aplica con league_id que agrega todos los torneos.
 })

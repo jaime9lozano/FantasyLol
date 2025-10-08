@@ -8,6 +8,7 @@ import { FantasyTeam } from '../teams/fantasy-team.entity';
 import { FantasyLeague } from '../leagues/fantasy-league.entity';
 import { PayClauseDto } from './dto/pay-clause.dto';
 import { T } from '../../database/schema.util';
+import { assertPlayerEligible } from '../leagues/league-pool.util';
 
 @Injectable()
 export class ValuationService {
@@ -29,7 +30,10 @@ export class ValuationService {
       if (leagues.length === 0) throw new BadRequestException('Liga no encontrada');
       const league = leagues[0];
 
-      // Slot actual del jugador (fantasy) con bloqueo
+  // Verifica elegibilidad (no permitir pagar cláusula por jugador fuera del pool)
+  await assertPlayerEligible(this.ds, dto.fantasyLeagueId, dto.playerId, 'payClause');
+
+  // Slot actual del jugador (fantasy) con bloqueo
       const slots = await trx.query(
         `
         SELECT id, fantasy_team_id, player_id, clause_value::bigint AS clause_value, locked_until

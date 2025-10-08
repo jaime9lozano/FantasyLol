@@ -99,6 +99,9 @@ export async function assignSixPlayers(
   teamId: number,
 ): Promise<void> {
   await ds.transaction(async (qr) => {
+    // Leer source_league_id de la liga para filtrar jugadores de esa liga (si existe)
+    const [lg] = await qr.query(`SELECT source_league_id FROM ${T('fantasy_league')} WHERE id = $1`, [leagueId]);
+    const sourceLeagueId: number | null = lg?.source_league_id ? Number(lg.source_league_id) : null;
     // 1) Jugadores ya asignados en ESTA liga (para no duplicar entre equipos de la misma liga)
     const taken = await qr.query(
       `
@@ -130,6 +133,7 @@ export async function assignSixPlayers(
           FROM public.player p
           JOIN public.team_player_membership tpm
             ON tpm.player_id = p.id
+          ${sourceLeagueId ? 'JOIN public.team t ON t.id = tpm.team_id AND t.league_id = $2' : ''}
           LEFT JOIN public.role r
             ON r.id = tpm.main_role_id
         ),
@@ -160,7 +164,7 @@ export async function assignSixPlayers(
         ORDER BY id ASC
         LIMIT 1000
         `,
-        [target],
+        sourceLeagueId ? [target, sourceLeagueId] : [target],
       );
       return rows.map((r: any) => Number(r.id));
     }
@@ -183,9 +187,11 @@ export async function assignSixPlayers(
         `
         SELECT p.id::bigint AS id
         FROM public.player p
+        ${sourceLeagueId ? 'JOIN public.team_player_membership tpm ON tpm.player_id = p.id JOIN public.team t ON t.id = tpm.team_id AND t.league_id = $1' : ''}
         ORDER BY p.id ASC
         LIMIT 2000
         `,
+        sourceLeagueId ? [sourceLeagueId] : [],
       );
       for (const r of rows) {
         const id = Number(r.id);
@@ -254,10 +260,25 @@ export async function createLeagueAndJoin(
   const { aliceId, bobId } = await createManagers(ds);
 
   const server = app.getHttpServer();
-  // Crear liga (tu controller ignora adminManagerId y usa 1 internamente)
+  // Elegimos una core league con suficientes jugadores actuales
+  const pref = await ds.query(`
+    WITH pref AS (
+      SELECT id, code FROM public.league WHERE code IN ('LEC','LCK21','LPL2020')
+    ),
+    ranked AS (
+      SELECT l.id, l.code, COUNT(DISTINCT p.id)::int AS players
+      FROM (SELECT * FROM pref UNION SELECT id, code FROM public.league) l
+      LEFT JOIN public.team t ON t.league_id = l.id
+      LEFT JOIN public.team_player_membership tpm ON tpm.team_id = t.id AND tpm.is_current = true
+      LEFT JOIN public.player p ON p.id = tpm.player_id
+      GROUP BY l.id, l.code
+      ORDER BY (CASE WHEN l.code IN ('LEC','LCK21','LPL2020') THEN 0 ELSE 1 END), players DESC, l.id ASC
+    )
+    SELECT id FROM ranked LIMIT 1`);
+  const coreLg = pref[0] ?? null;
   const leagueRes = await request(server)
     .post('/fantasy/leagues')
-    .send({ name })
+    .send({ name, ...(coreLg ? { sourceLeagueId: Number(coreLg.id) } : {}) })
     .expect(201);
 
   const leagueId: number = leagueRes.body?.id;
@@ -289,4 +310,78 @@ export async function createLeagueAndJoin(
   await assignSixPlayers(ds, leagueId, bobTeamId);
 
   return { leagueId, aliceTeamId, bobTeamId, aliceManagerId: aliceId, bobManagerId: bobId };
+}
+
+/**
+ * Asegura que la liga tenga un source_tournament_id. Si es null, asigna el primer tournament disponible.
+ * Devuelve el tournament_id final o null si no hay torneos en dataset.
+ */
+export async function ensureLeagueTournament(ds: DataSource, leagueId: number): Promise<number | null> {
+  // Leemos la liga completa para saber si ya tiene tournament_id pero sin metadatos
+  const [lg] = await ds.query(`
+    select source_tournament_id, source_tournament_name, source_tournament_overview, source_tournament_year
+    from ${T('fantasy_league')} where id = $1`, [leagueId]);
+
+  let tid: number | null = lg?.source_tournament_id ? Number(lg.source_tournament_id) : null;
+
+  // Si no hay tournament_id asignado elegimos el primero disponible
+  if (!tid) {
+    const tournaments = await ds.query(`select id from public.tournament order by id asc limit 1`);
+    if (!tournaments.length) return null;
+    tid = Number(tournaments[0].id);
+    await ds.query(`update ${T('fantasy_league')} set source_tournament_id = $2, updated_at = now() where id = $1`, [leagueId, tid]);
+  }
+
+  // Poblar metadatos si faltan (o siempre refrescar: decisión ligera → sólo si alguno es null)
+  if (!lg?.source_tournament_name || !lg?.source_tournament_overview || !lg?.source_tournament_year) {
+    const [trow] = await ds.query(`
+      select id, name, overview_page, year, date_start
+      from public.tournament where id = $1`, [tid]);
+    if (trow) {
+      const name: string | null = trow.name || deriveTournamentNameFromOverview(trow.overview_page) || null;
+      const overview: string | null = trow.overview_page || null;
+      const year: number | null = trow.year || deriveYearFromDateStart(trow.date_start) || null;
+      await ds.query(`
+        update ${T('fantasy_league')}
+        set source_tournament_name = $2,
+            source_tournament_overview = $3,
+            source_tournament_year = $4,
+            updated_at = now()
+        where id = $1`, [leagueId, name, overview, year]);
+    }
+  }
+  return tid;
+}
+
+// Helpers locales (test-only) para derivar valores si la ingesta no los trae.
+function deriveTournamentNameFromOverview(ov: string | null | undefined): string | null {
+  if (!ov) return null;
+  const parts = ov.split('/').filter(Boolean);
+  let base = parts.length ? parts[parts.length - 1] : ov;
+  base = base.replace(/_/g, ' ').replace(/\bSeason\b/gi, '').replace(/\s{2,}/g, ' ').trim();
+  base = base.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  return base || null;
+}
+
+function deriveYearFromDateStart(dsStr: string | null | undefined): number | null {
+  if (!dsStr) return null;
+  const d = new Date(dsStr + (dsStr.length === 10 ? 'T00:00:00Z' : ''));
+  if (isNaN(d.getTime())) return null;
+  return d.getUTCFullYear();
+}
+
+/**
+ * Busca un torneo existente sin partidas asociadas (COUNT(game)=0).
+ * Devuelve null si todos los torneos tienen al menos un game.
+ */
+export async function findEmptyTournamentId(ds: DataSource): Promise<number | null> {
+  const rows = await ds.query(`
+    SELECT t.id
+    FROM public.tournament t
+    LEFT JOIN public.game g ON g.tournament_id = t.id
+    GROUP BY t.id
+    HAVING COUNT(g.id) = 0
+    ORDER BY t.id ASC
+    LIMIT 1`);
+  return rows.length ? Number(rows[0].id) : null;
 }

@@ -53,11 +53,39 @@ export class ScoringService {
   const from = period.startsAt;
   const to = period.endsAt;
 
+  const coreLeagueId = (league as any).sourceLeagueId ?? null;
+
   await this.ds.transaction(async (qr) => {
     // 1) Leer stats del periodo usando RELACIÓN con Game (dentro de la transacción)
     const pgsRepo = qr.getRepository(PlayerGameStats);
 
     // Usamos columnas crudas con alias, para evitar el problema de s.playerId → s.playerid
+    const statsQb = pgsRepo
+      .createQueryBuilder('s')
+      .leftJoin('s.game', 'g')
+      .where('g.datetime_utc BETWEEN :a AND :b', { a: from, b: to })
+      .select([])
+      .addSelect('s."player_id"', 'player_id')
+      .addSelect('s."game_id"', 'game_id')
+      .addSelect('s."kills"', 'kills')
+      .addSelect('s."assists"', 'assists')
+      .addSelect('s."deaths"', 'deaths')
+      .addSelect('s."cs"', 'cs')
+      .addSelect('s."player_win"', 'player_win');
+
+    if (coreLeagueId) {
+      // limitar a juegos cuyos torneos pertenezcan a la liga core por code/prefijo
+      const subq = this.ds
+        .createQueryBuilder()
+        .select('t.id')
+        .from('public.tournament', 't')
+        .where(`t.league = (SELECT code FROM public.league WHERE id = :lid)`)
+        .orWhere(`t.league ILIKE (SELECT code FROM public.league WHERE id = :lid) || '%'`)
+        .orWhere(`t.league_icon_key ILIKE (SELECT code FROM public.league WHERE id = :lid) || '%'`)
+        .getQuery();
+      statsQb.andWhere(`g.tournament_id IN (${subq})`).setParameters({ lid: coreLeagueId });
+    }
+
     const stats: Array<{
       player_id: number;
       game_id: number;
@@ -66,19 +94,7 @@ export class ScoringService {
       deaths: number | null;
       cs: number | null;
       player_win: boolean | null;
-    }> = await pgsRepo
-      .createQueryBuilder('s')
-      .leftJoin('s.game', 'g')
-      .where('g.datetime_utc BETWEEN :a AND :b', { a: from, b: to })
-      .select([]) // limpiamos selección previa
-      .addSelect('s."player_id"', 'player_id')
-      .addSelect('s."game_id"', 'game_id')
-      .addSelect('s."kills"', 'kills')
-      .addSelect('s."assists"', 'assists')
-      .addSelect('s."deaths"', 'deaths')
-      .addSelect('s."cs"', 'cs')
-      .addSelect('s."player_win"', 'player_win')
-      .getRawMany();
+    }> = await statsQb.getRawMany();
 
     // 2) Upsert de puntos por jugador/partido (en el schema activo)
     for (const s of stats) {
@@ -97,8 +113,7 @@ export class ScoringService {
     }
 
    // 3) Agregado por equipo SOLO con puntos del periodo (join a public.game)
-    await qr.query(
-      `
+    const teamPointsBase = `
       INSERT INTO ${T('fantasy_team_points')}
         (fantasy_league_id, fantasy_team_id, fantasy_scoring_period_id, points)
       SELECT
@@ -109,19 +124,24 @@ export class ScoringService {
       FROM ${T('fantasy_roster_slot')} fr
       LEFT JOIN ${T('fantasy_player_points')} fpp
         ON fpp.fantasy_league_id = fr.fantasy_league_id
-      AND fpp.player_id = fr.player_id
-      JOIN public.game g
-        ON g.id = fpp.game_id
+       AND fpp.player_id = fr.player_id
+      JOIN public.game g ON g.id = fpp.game_id
       WHERE fr.fantasy_league_id = $2
         AND fr.active = true
         AND fr.starter = true
         AND g.datetime_utc BETWEEN $3 AND $4
+    ${coreLeagueId ? `AND g.tournament_id IN (
+        SELECT t.id FROM public.tournament t
+        WHERE t.league = (SELECT code FROM public.league WHERE id = $5)
+         OR t.league ILIKE (SELECT code FROM public.league WHERE id = $5) || '%'
+         OR (t.league_icon_key IS NOT NULL AND t.league_icon_key ILIKE (SELECT code FROM public.league WHERE id = $5) || '%')
+      )` : ''}
       GROUP BY fr.fantasy_league_id, fr.fantasy_team_id
       ON CONFLICT (fantasy_league_id, fantasy_team_id, fantasy_scoring_period_id)
-      DO UPDATE SET points = EXCLUDED.points, updated_at = now()
-      `,
-      [periodId, fantasyLeagueId, from, to],
-    );
+      DO UPDATE SET points = EXCLUDED.points, updated_at = now()`;
+
+    const params = coreLeagueId ? [periodId, fantasyLeagueId, from, to, coreLeagueId] : [periodId, fantasyLeagueId, from, to];
+    await qr.query(teamPointsBase, params);
 
     // 4) Penalización por lineup incompleto
     const requiredSlots: string[] = Array.isArray(league.rosterConfig?.slots)

@@ -67,4 +67,76 @@ describe('Scoring E2E', () => {
     );
     expect(Number(row?.points ?? 0)).toBe(0);
   });
+
+  it('ignora stats de juegos fuera de la liga core (filtro por league_id en todos sus torneos)', async () => {
+    const { leagueId, aliceTeamId } = await createLeagueAndJoin(app, ds, 'Scoring Torneo');
+    // Periodo corto: últimos 3 días
+    const [p] = await ds.query(
+      `insert into ${T('fantasy_scoring_period')} (fantasy_league_id, name, starts_at, ends_at)
+       values ($1, 'Periodo Torneo', now() - interval '3 days', now()) returning id`,
+      [leagueId],
+    );
+    const periodId = p.id;
+
+    // Obtener el league_id core de la liga y un torneo de otra liga para insertar stats que deban ignorarse
+  const [lrow] = await ds.query(`SELECT source_league_id FROM ${T('fantasy_league')} WHERE id = $1`, [leagueId]);
+  const sourceLeagueId = lrow?.source_league_id ?? null;
+    if (!sourceLeagueId) {
+      console.warn('SKIP: la liga no tiene source_league_id para probar filtro por liga');
+      return;
+    }
+    const other = await ds.query(`
+      with code as (select code from public.league where id = $1),
+      others as (
+        select t.id from public.tournament t, code c
+        where not (
+          t.league = c.code or t.league ilike c.code || '%' or (t.league_icon_key is not null and t.league_icon_key ilike c.code || '%')
+        )
+      )
+      select id from others limit 1
+    `, [sourceLeagueId]);
+    if (!other.length) {
+      console.warn('SKIP: no existe torneo de otra liga para probar exclusión');
+      return;
+    }
+    const otherTid = other[0].id;
+
+    // Elegir un jugador titular de Alice
+    const [slot] = await ds.query(
+      `select player_id from ${T('fantasy_roster_slot')} where fantasy_team_id = $1 and starter = true limit 1`,
+      [aliceTeamId],
+    );
+    const playerId = Number(slot.player_id);
+
+    // Insert game en torneo distinto con stats grandes
+    const [gBad] = await ds.query(
+      `insert into public.game (leaguepedia_game_id, datetime_utc, tournament_id, tournament_name, overview_page, created_at, updated_at)
+       values ($1, now() - interval '1 day', $2, 'Other T', 'Other', now(), now()) returning id`,
+      ['FAKE_BAD_'+Date.now(), otherTid],
+    );
+    const badGameId = gBad.id;
+    await ds.query(
+      `insert into public.player_game_stats (player_id, game_id, kills, assists, deaths, cs, player_win, created_at, updated_at)
+       values ($1, $2, 15, 20, 1, 400, true, now(), now())`,
+      [playerId, badGameId],
+    );
+
+    // Insert game en torneo válido sin stats (o podríamos añadir stats mínimos cero)
+    // No insertamos un juego "válido" porque la suite sólo necesita verificar exclusión del otro torneo
+    // Compute
+    // Sin stats: produce 0 puntos.
+
+    // Compute
+    await request(app.getHttpServer())
+      .post('/fantasy/scoring/compute')
+      .send({ fantasyLeagueId: leagueId, periodId })
+      .expect(201);
+
+    // Debe ignorar el juego de otra liga: no se insertan puntos para ese game
+    const playerPoints = await ds.query(
+      `select points from ${T('fantasy_player_points')} where fantasy_league_id = $1 and player_id = $2 and game_id = $3`,
+      [leagueId, playerId, badGameId],
+    );
+    expect(playerPoints.length).toBe(0); // no se insertó porque se filtró
+  });
 });

@@ -31,6 +31,28 @@ export class FantasyLeague {
   @Column({ name: 'roster_config', type: 'jsonb', default: () => `'{"slots":["TOP","JNG","MID","ADC","SUP"],"bench":2}'` })
   rosterConfig: { slots: string[]; bench: number };
 
+  // Código de la liga (ej: 'LEC','LCK','LPL') sobre la que se basa este fantasy.
+  @Column({ name: 'source_league_code', type: 'text', nullable: true })
+  sourceLeagueCode: string | null;
+
+  // ID de la liga core (public.league.id) si existe correlación.
+  @Column({ name: 'source_league_id', type: 'int', nullable: true })
+  sourceLeagueId: number | null;
+
+  // Torneo activo (tournament.id en public.tournament) que define el pool válido de jugadores/partidos.
+  @Column({ name: 'source_tournament_id', type: 'int', nullable: true })
+  sourceTournamentId: number | null;
+
+  // Metadatos cacheados del torneo (para mostrar sin más joins). Valores opcionales.
+  @Column({ name: 'source_tournament_name', type: 'text', nullable: true })
+  sourceTournamentName: string | null;
+
+  @Column({ name: 'source_tournament_overview', type: 'text', nullable: true })
+  sourceTournamentOverview: string | null;
+
+  @Column({ name: 'source_tournament_year', type: 'int', nullable: true })
+  sourceTournamentYear: number | null;
+
   @CreateDateColumn({ name: 'created_at' }) createdAt: Date;
   @UpdateDateColumn({ name: 'updated_at' }) updatedAt: Date;
 }

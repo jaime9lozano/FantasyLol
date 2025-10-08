@@ -12,7 +12,6 @@ import { FantasyOffersModule } from './fantasy/offers/fantasy-offers.module';
 import { FantasyScoringModule } from './fantasy/scoring/fantasy-scoring.module';
 import { FantasyValuationModule } from './fantasy/valuation/fantasy-valuation.module';
 import { FantasySchedulerModule } from './fantasy/scheduler/fantasy-scheduler.module';
-import { FantasyDemoModule } from './fantasy/demo/fantasy-demo.module';
 
 @Module({
 imports: [
@@ -27,7 +26,6 @@ imports: [
     FantasyScoringModule,
     FantasyValuationModule,
     FantasySchedulerModule,
-    FantasyDemoModule,
   ],
 
   controllers: [AppController],

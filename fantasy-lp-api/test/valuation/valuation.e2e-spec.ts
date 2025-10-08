@@ -52,6 +52,21 @@ describe('Valuation E2E', () => {
     expect(owned).toBeTruthy();
   });
 
+  it('pagar cláusula sigue permitido en modelo por league_id (no forzamos torneo)', async () => {
+    const { leagueId, aliceTeamId, bobTeamId } = await createLeagueAndJoin(app, ds, 'Valuation Liga Ineleg');
+    const [row] = await ds.query(
+      `select player_id from ${T('fantasy_roster_slot')} where fantasy_team_id = $1 and active = true limit 1`,
+      [aliceTeamId],
+    );
+    const playerId = Number(row.player_id);
+    // Con league_id ya no forzamos inelegibilidad cambiando torneo; omitimos este negativo
+
+    await request(app.getHttpServer())
+      .post('/fantasy/valuation/pay-clause')
+      .send({ fantasyLeagueId: leagueId, playerId, toTeamId: bobTeamId })
+      .expect(201);
+  });
+
   it('recalcAllValues responde ok (puede actualizar 0 si no hay puntos)', async () => {
     const { leagueId } = await createLeagueAndJoin(app, ds, 'Valuation Liga 2');
 

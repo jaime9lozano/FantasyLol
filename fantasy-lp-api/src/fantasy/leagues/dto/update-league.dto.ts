@@ -7,4 +7,7 @@ export class UpdateLeagueDto {
   @IsOptional() @IsNumber() clauseMultiplier?: number;
   @IsOptional() scoringConfig?: Record<string, any>;
   @IsOptional() rosterConfig?: { slots: string[]; bench: number; };
+  // Cambiar liga fuente (recalcula torneo activo si se indica refreshTournament=true)
+  @IsOptional() @IsString() sourceLeagueCode?: string;
+  @IsOptional() refreshTournament?: boolean;
 }
