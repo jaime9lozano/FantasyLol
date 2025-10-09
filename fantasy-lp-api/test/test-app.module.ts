@@ -7,6 +7,7 @@ import { FantasyMarketModule } from '../src/fantasy/market/fantasy-market.module
 import { FantasyOffersModule } from '../src/fantasy/offers/fantasy-offers.module';
 import { FantasyScoringModule } from '../src/fantasy/scoring/fantasy-scoring.module';
 import { FantasyValuationModule } from '../src/fantasy/valuation/fantasy-valuation.module';
+import { LedgerModule } from '../src/fantasy/ledger/ledger.module';
 import { DatabaseTestModule } from 'src/database/database.test.module';
 
 @Module({
@@ -19,6 +20,7 @@ import { DatabaseTestModule } from 'src/database/database.test.module';
     FantasyOffersModule,
     FantasyScoringModule,
     FantasyValuationModule,
+    LedgerModule,
   ],
 })
 export class TestAppModule {}

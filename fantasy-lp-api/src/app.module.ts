@@ -11,6 +11,7 @@ import { FantasyMarketModule } from './fantasy/market/fantasy-market.module';
 import { FantasyOffersModule } from './fantasy/offers/fantasy-offers.module';
 import { FantasyScoringModule } from './fantasy/scoring/fantasy-scoring.module';
 import { FantasyValuationModule } from './fantasy/valuation/fantasy-valuation.module';
+import { LedgerModule } from './fantasy/ledger/ledger.module';
 import { FantasySchedulerModule } from './fantasy/scheduler/fantasy-scheduler.module';
 
 @Module({
@@ -26,6 +27,7 @@ imports: [
     FantasyScoringModule,
     FantasyValuationModule,
     FantasySchedulerModule,
+    LedgerModule,
   ],
 
   controllers: [AppController],
