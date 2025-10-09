@@ -40,7 +40,3 @@ Documentación técnica detallada:
 
 - API con autenticación JWT (roles manager/admin), guards de pertenencia, sockets por liga, y endpoints de fantasy: mercado, ofertas, valoración, scoring, ledger y equipos.
 - Suite E2E cubre los flujos principales.
-
-## Licencia
-
-MIT.

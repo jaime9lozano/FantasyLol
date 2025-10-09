@@ -188,12 +188,3 @@ Para ejecutar la suite completa:
 ```
 npm run test:e2e
 ```
-
-## Notas
-
-- Este proyecto no usa migraciones formales; en el entorno de test se realizan `ALTER`/`CREATE` idempotentes para asegurar esquema mínimo.
-- En producción, define correctamente `JWT_SECRET`, `CORS_ORIGIN` y no actives `ENABLE_DEV_LOGIN`.
-
----
-
-Si necesitas añadir nuevas rutas protegidas o afinar los límites, sigue el patrón: anotar con `@UseGuards(MembershipGuard)`, usar `@User()` para inferir parámetros y documentar la ruta aquí.

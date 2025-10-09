@@ -1,4 +1,5 @@
 import { Body, Controller, ForbiddenException, Get, Post, Put } from '@nestjs/common';
+import { ApiBearerAuth, ApiBody, ApiTags } from '@nestjs/swagger';
 import { JwtService } from '@nestjs/jwt';
 import { Public } from './public.decorator';
 import { AuthService } from './auth.service';
@@ -13,6 +14,7 @@ type DevLoginDto = {
   name?: string;
 };
 
+@ApiTags('Auth')
 @Controller('auth')
 export class AuthController {
   constructor(private readonly jwt: JwtService, private readonly auth: AuthService) {}
@@ -39,6 +41,18 @@ export class AuthController {
   // Registro público de managers; el rol admin sólo si ALLOW_REGISTER_ADMIN=true
   @Public()
   @Post('register')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        displayName: { type: 'string', example: 'Faker' },
+        email: { type: 'string', example: 'faker@example.com' },
+        password: { type: 'string', example: 'secret123' },
+        role: { type: 'string', enum: ['manager', 'admin'], example: 'manager' },
+      },
+      required: ['displayName', 'email', 'password'],
+    },
+  })
   register(@Body() body: RegisterDto) {
     return this.auth.register(body);
   }
@@ -46,16 +60,28 @@ export class AuthController {
   // Login por email/password
   @Public()
   @Post('login')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        email: { type: 'string', example: 'faker@example.com' },
+        password: { type: 'string', example: 'secret123' },
+      },
+      required: ['email', 'password'],
+    },
+  })
   login(@Body() body: LoginDto) {
     return this.auth.login(body);
   }
 
   // Perfil actual
+  @ApiBearerAuth('bearer')
   @Get('me')
   me(@User() user?: AuthUser) {
     return this.auth.me(Number(user?.userId));
   }
 
+  @ApiBearerAuth('bearer')
   @Put('me')
   updateMe(@Body() body: UpdateProfileDto, @User() user?: AuthUser) {
     return this.auth.updateProfile(Number(user?.userId), body);
@@ -64,6 +90,15 @@ export class AuthController {
   // Refresh tokens: permite usar sólo el refresh token (Bearer refresh no requerido)
   @Public()
   @Post('refresh')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        refreshToken: { type: 'string', example: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...' },
+      },
+      required: ['refreshToken'],
+    },
+  })
   refresh(@Body() body: RefreshDto, @User() user?: AuthUser) {
     return this.auth.refresh(user?.userId ? Number(user.userId) : undefined, body);
   }
