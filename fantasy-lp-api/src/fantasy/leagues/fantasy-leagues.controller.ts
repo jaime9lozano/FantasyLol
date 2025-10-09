@@ -1,5 +1,5 @@
 // src/fantasy/leagues/fantasy-leagues.controller.ts
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, Query, ParseIntPipe } from '@nestjs/common';
 import { FantasyLeaguesService } from './fantasy-leagues.service';
 import { CreateFantasyLeagueDto } from './dto/create-fantasy-league.dto';
 import { JoinLeagueDto } from './dto/join-league.dto';
@@ -40,4 +40,12 @@ export class FantasyLeaguesController {
   currentMarket(@Param('id') id: string) {
     return this.svc.getCurrentMarket(Number(id));
   }
+  
+    @Get(':id/summary')
+    async getLeagueSummary(
+      @Param('id', ParseIntPipe) id: number,
+      @Query('top') top = '10',
+    ) {
+      return this.svc.getLeagueSummary(id, Math.min(50, Math.max(1, Number(top) || 10)));
+    }
 }

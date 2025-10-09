@@ -182,6 +182,49 @@ export class FantasyLeaguesService {
     };
   }
 
+  async getLeagueSummary(leagueId: number, topN = 10) {
+    // Ranking top N
+    const ranking = await this.ds.query(
+      `SELECT ft.id, ft.name, ft.points_total::float AS points, fm.display_name
+       FROM ${T('fantasy_team')} ft
+       JOIN ${T('fantasy_manager')} fm ON fm.id = ft.fantasy_manager_id
+       WHERE ft.fantasy_league_id = $1
+       ORDER BY ft.points_total DESC, ft.id ASC
+       LIMIT $2`,
+      [leagueId, topN],
+    );
+
+    // Próximo cierre de mercado (orden o ciclo)
+    const [nextOrder] = await this.ds.query(
+      `SELECT closes_at FROM ${T('market_order')} WHERE fantasy_league_id = $1 AND status = 'OPEN' ORDER BY closes_at ASC LIMIT 1`,
+      [leagueId],
+    );
+    const [lastCycle] = await this.ds.query(
+      `SELECT id, opens_at, closes_at FROM ${T('market_cycle')} WHERE fantasy_league_id = $1 ORDER BY id DESC LIMIT 1`,
+      [leagueId],
+    );
+
+    // Últimos movimientos de ledger (global liga)
+    const ledger = await this.ds.query(
+      `SELECT id, fantasy_team_id, type, delta::bigint AS delta, balance_after::bigint AS balance_after, metadata, created_at
+       FROM ${T('fantasy_budget_ledger')}
+       WHERE fantasy_league_id = $1
+       ORDER BY created_at DESC, id DESC
+       LIMIT 20`,
+      [leagueId],
+    );
+
+    return {
+      ranking,
+      market: {
+        nextCloseAt: nextOrder?.closes_at ?? lastCycle?.closes_at ?? null,
+        cycle: lastCycle ? { id: lastCycle.id, opensAt: lastCycle.opens_at, closesAt: lastCycle.closes_at } : null,
+      },
+      ledger,
+      serverTime: new Date().toISOString(),
+    };
+  }
+
   /**
    * Selecciona el torneo "activo" más reciente para la liga (split actual) y cachea datos.
    * Criterio: tournament.league ILIKE code% AND date_start <= today AND (date_end IS NULL OR date_end >= today)
