@@ -12,6 +12,7 @@ Este proyecto implementa un bloque de seguridad opt‑in basado en JWT que no ro
   - `OptionalJwtAuthGuard`: aplica JWT solo cuando `ENABLE_AUTH=true` (útil en dev/test).
   - `MembershipGuard`: valida pertenencia a liga/equipo (si el token trae `leagueId`/`teamId`).
   - Decorador `@User()` tipado para acceder a `req.user` y habilitar inferencia automática de parámetros.
+  - Roles: soporte para `manager` y `admin` mediante `RolesGuard` + `@Roles()`.
 
 - CORS y Helmet
   - Opt‑in por variables de entorno (`ENABLE_CORS`, `CORS_ORIGIN`, `ENABLE_HELMET`).
@@ -27,7 +28,7 @@ Este proyecto implementa un bloque de seguridad opt‑in basado en JWT que no ro
 
 ## Variables de entorno
 
-Las principales variables usadas por el bloque de seguridad:
+ Las principales variables usadas por el bloque de seguridad:
 
 - `ENABLE_AUTH` (boolean): activa la autenticación JWT y los guards. Por defecto `false` en dev/test.
 - `ENABLE_DEV_LOGIN` (boolean): permite `/auth/dev-login` en dev/test. No debe activarse en producción.
@@ -37,6 +38,7 @@ Las principales variables usadas por el bloque de seguridad:
 - `ENABLE_HELMET` (boolean): habilita Helmet.
 - `RATE_LIMIT_TTL` (number): ventana global en segundos para Throttler.
 - `RATE_LIMIT_LIMIT` (number): solicitudes permitidas por ventana (global).
+ - `ALLOW_REGISTER_ADMIN` (boolean): si es `true`, el endpoint de registro permite crear usuarios con rol `admin`.
 
 Ejemplo `.env` (desarrollo):
 
@@ -80,6 +82,21 @@ Respuesta:
 ```
 
 Usa el token en HTTP como `Authorization: Bearer <jwt>` y en WS en el `join.league` (ver abajo).
+
+## Registro y login de usuarios (managers/admin)
+
+Rutas públicas:
+
+- `POST /auth/register` con body `{ displayName, email, password, role? }`. El rol por defecto es `manager`. Para permitir registrar `admin`, establece `ALLOW_REGISTER_ADMIN=true` en el entorno.
+- `POST /auth/login` con body `{ email, password }`.
+
+Respuesta común:
+
+```
+{ "access_token": "<jwt>", "payload": { sub, name, role, leagueId: null, teamId: null } }
+```
+
+Para proteger rutas administrativas, usa `@UseGuards(RolesGuard)` y `@Roles('admin')`.
 
 ## Inferencia automática de parámetros (DX)
 
