@@ -1,5 +1,6 @@
 // src/fantasy/market/market.controller.ts
 import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { MarketService } from './market.service';
 import { PlaceBidDto } from './dto/place-bid.dto';
 import { CreateListingDto } from './dto/create-listing.dto';
@@ -13,6 +14,7 @@ export class MarketController {
   constructor(private readonly svc: MarketService) {}
 
   @UseGuards(MembershipGuard)
+  @Throttle({ default: { limit: 10, ttl: 60000 } }) // máx 10 listings/min por cliente
   @Post('listing')
   createListing(@Body() dto: CreateListingDto, @User() user?: AuthUser) {
     if (user) {
@@ -23,6 +25,7 @@ export class MarketController {
   }
 
   @UseGuards(MembershipGuard)
+  @Throttle({ default: { limit: 30, ttl: 60000 } }) // máx 30 pujas/min por cliente
   @Post('bid')
   placeBid(@Body() dto: PlaceBidDto, @User() user?: AuthUser) {
     if (user?.teamId) dto.bidderTeamId = Number(user.teamId);
@@ -31,6 +34,7 @@ export class MarketController {
 
   // /diag: cierra subastas vencidas (debug manual)
   @UseGuards(MembershipGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } }) // cerrar subastas
   @Post('close')
   @HttpCode(HttpStatus.OK)
   close(@Query('leagueId') leagueId: string) {
@@ -38,18 +42,21 @@ export class MarketController {
   }
 
   @UseGuards(MembershipGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } }) // iniciar ciclo
   @Post('cycle/start')
   startCycle(@Query('leagueId') leagueId: string) {
     return this.svc.startNewCycle(Number(leagueId));
   }
 
   @UseGuards(MembershipGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } }) // rotar ciclo
   @Post('cycle/rotate')
   rotate(@Query('leagueId') leagueId: string) {
     return this.svc.settleAndRotate(Number(leagueId));
   }
 
   @UseGuards(MembershipGuard)
+  @Throttle({ default: { limit: 10, ttl: 60000 } }) // vender a liga
   @Post('sell-to-league')
   sellToLeague(@Body() dto: SellToLeagueDto, @User() user?: AuthUser) {
     if (user) {
