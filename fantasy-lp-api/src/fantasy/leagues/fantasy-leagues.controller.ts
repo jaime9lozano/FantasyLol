@@ -45,7 +45,8 @@ export class FantasyLeaguesController {
 
   @UseGuards(MembershipGuard)
   @Get(':id/market/current')
-  currentMarket(@Param('id') id: string) {
+  currentMarket(@Param('id') id: string, @User() user?: AuthUser) {
+    // Si hay token y trae leagueId, puede usarse en el servicio para validaciones futuras
     return this.svc.getCurrentMarket(Number(id));
   }
   
@@ -58,7 +59,7 @@ export class FantasyLeaguesController {
       @User() user?: AuthUser,
     ) {
       const topN = Math.min(50, Math.max(1, Number(top) || 10));
-      const tId = teamId ? Number(teamId) : undefined;
+      const tId = teamId ? Number(teamId) : (user?.teamId ? Number(user.teamId) : undefined);
       return this.svc.getLeagueSummary(id, topN, tId);
     }
 }
