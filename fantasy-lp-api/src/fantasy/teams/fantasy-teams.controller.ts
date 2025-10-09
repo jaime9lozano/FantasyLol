@@ -4,21 +4,20 @@ import { FantasyTeamsService } from './fantasy-teams.service';
 import { MoveLineupDto } from './dto/move-lineup.dto';
 import { DataSource } from 'typeorm';
 import { T } from '../../database/schema.util';
-import { OptionalJwtAuthGuard } from '../../auth/optional-jwt.guard';
 import { MembershipGuard } from '../../auth/membership.guard';
 
 @Controller('fantasy/teams')
 export class FantasyTeamsController {
   constructor(private readonly svc: FantasyTeamsService, private ds: DataSource) {}
 
-  @UseGuards(OptionalJwtAuthGuard, MembershipGuard)
+  @UseGuards(MembershipGuard)
   @Get(':id/roster')
   roster(@Param('id') id: string) {
     return this.svc.getRoster(Number(id));
   }
 
   // Roster compacto pensado para la pantalla inicial (datos mínimos y ordenado)
-  @UseGuards(OptionalJwtAuthGuard, MembershipGuard)
+  @UseGuards(MembershipGuard)
   @Get(':id/roster/compact')
   compactRoster(@Param('id') id: string) {
     return this.svc.getCompactRoster(Number(id));

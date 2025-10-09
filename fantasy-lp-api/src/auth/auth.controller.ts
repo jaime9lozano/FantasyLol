@@ -1,5 +1,6 @@
 import { Body, Controller, ForbiddenException, Post } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { Public } from './public.decorator';
 
 type DevLoginDto = {
   userId: number;
@@ -12,6 +13,7 @@ type DevLoginDto = {
 export class AuthController {
   constructor(private readonly jwt: JwtService) {}
 
+  @Public()
   @Post('dev-login')
   devLogin(@Body() body: DevLoginDto) {
     // Restringir en producción

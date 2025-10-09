@@ -9,11 +9,16 @@ import { FantasyScoringModule } from '../src/fantasy/scoring/fantasy-scoring.mod
 import { FantasyValuationModule } from '../src/fantasy/valuation/fantasy-valuation.module';
 import { LedgerModule } from '../src/fantasy/ledger/ledger.module';
 import { DatabaseTestModule } from 'src/database/database.test.module';
+import { AuthModule } from 'src/auth/auth.module';
+import { APP_GUARD } from '@nestjs/core';
+import { GlobalAuthGuard } from 'src/auth/global-auth.guard';
+import { OptionalJwtAuthGuard } from 'src/auth/optional-jwt.guard';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     DatabaseTestModule,
+  AuthModule,
     FantasyLeaguesModule,
     FantasyTeamsModule,
     FantasyMarketModule,
@@ -21,6 +26,10 @@ import { DatabaseTestModule } from 'src/database/database.test.module';
     FantasyScoringModule,
     FantasyValuationModule,
     LedgerModule,
+  ],
+  providers: [
+    { provide: APP_GUARD, useClass: GlobalAuthGuard },
+    OptionalJwtAuthGuard,
   ],
 })
 export class TestAppModule {}

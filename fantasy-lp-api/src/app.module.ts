@@ -15,6 +15,9 @@ import { FantasyValuationModule } from './fantasy/valuation/fantasy-valuation.mo
 import { LedgerModule } from './fantasy/ledger/ledger.module';
 import { AuthModule } from './auth/auth.module';
 import { FantasySchedulerModule } from './fantasy/scheduler/fantasy-scheduler.module';
+import { APP_GUARD } from '@nestjs/core';
+import { GlobalAuthGuard } from './auth/global-auth.guard';
+import { OptionalJwtAuthGuard } from './auth/optional-jwt.guard';
 
 @Module({
 imports: [
@@ -36,6 +39,11 @@ imports: [
   ],
 
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    // Guard global estilo @Public + Optional JWT
+    { provide: APP_GUARD, useClass: GlobalAuthGuard },
+    OptionalJwtAuthGuard,
+  ],
 })
 export class AppModule {}

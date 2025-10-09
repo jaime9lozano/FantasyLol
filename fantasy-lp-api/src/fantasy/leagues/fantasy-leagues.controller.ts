@@ -6,17 +6,22 @@ import { JoinLeagueDto } from './dto/join-league.dto';
 import { UpdateLeagueDto } from './dto/update-league.dto';
 import { OptionalJwtAuthGuard } from '../../auth/optional-jwt.guard';
 import { MembershipGuard } from '../../auth/membership.guard';
+import { User } from '../../auth/user.decorator';
+import type { AuthUser } from '../../auth/user.decorator';
+import { Public } from '../../auth/public.decorator';
 
 @Controller('fantasy/leagues')
 export class FantasyLeaguesController {
   constructor(private readonly svc: FantasyLeaguesService) {}
 
+  @Public()
   @Post()
   createLeague(@Body() dto: CreateFantasyLeagueDto) {
     // Por simplicidad: admin_manager_id = 1; en tu auth real toma del token/req.user
     return this.svc.createLeague(1, dto);
   }
 
+  @Public()
   @Post('join')
   @HttpCode(HttpStatus.CREATED)
   join(@Body() dto: JoinLeagueDto) {
@@ -38,18 +43,19 @@ export class FantasyLeaguesController {
     return this.svc.updateEconomicConfig(Number(id), body);
   }
 
-  @UseGuards(OptionalJwtAuthGuard, MembershipGuard)
+  @UseGuards(MembershipGuard)
   @Get(':id/market/current')
   currentMarket(@Param('id') id: string) {
     return this.svc.getCurrentMarket(Number(id));
   }
   
-    @UseGuards(OptionalJwtAuthGuard, MembershipGuard)
+  @UseGuards(MembershipGuard)
     @Get(':id/summary')
     async getLeagueSummary(
       @Param('id', ParseIntPipe) id: number,
       @Query('top') top = '10',
       @Query('teamId') teamId?: string,
+      @User() user?: AuthUser,
     ) {
       const topN = Math.min(50, Math.max(1, Number(top) || 10));
       const tId = teamId ? Number(teamId) : undefined;
