@@ -182,7 +182,7 @@ export class FantasyLeaguesService {
     };
   }
 
-  async getLeagueSummary(leagueId: number, topN = 10) {
+  async getLeagueSummary(leagueId: number, topN = 10, yourTeamId?: number) {
     // Ranking top N
     const ranking = await this.ds.query(
       `SELECT ft.id, ft.name, ft.points_total::float AS points, fm.display_name
@@ -194,9 +194,9 @@ export class FantasyLeaguesService {
       [leagueId, topN],
     );
 
-    // Próximo cierre de mercado (orden o ciclo)
-    const [nextOrder] = await this.ds.query(
-      `SELECT closes_at FROM ${T('market_order')} WHERE fantasy_league_id = $1 AND status = 'OPEN' ORDER BY closes_at ASC LIMIT 1`,
+    // Próximos cierres de mercado (órdenes abiertas) y último ciclo
+    const nextOrders = await this.ds.query(
+      `SELECT closes_at FROM ${T('market_order')} WHERE fantasy_league_id = $1 AND status = 'OPEN' ORDER BY closes_at ASC LIMIT 5`,
       [leagueId],
     );
     const [lastCycle] = await this.ds.query(
@@ -214,12 +214,44 @@ export class FantasyLeaguesService {
       [leagueId],
     );
 
+    // Tu equipo (posición, puntos, presupuesto) si se provee teamId
+    let yourTeam: any = null;
+    if (yourTeamId) {
+      const [row] = await this.ds.query(
+        `WITH ranked AS (
+           SELECT ft.id,
+                  ft.name,
+                  ft.points_total::float AS points,
+                  ft.budget_remaining::bigint AS budget_remaining,
+                  ft.budget_reserved::bigint AS budget_reserved,
+                  RANK() OVER (ORDER BY ft.points_total DESC, ft.id ASC) AS pos
+           FROM ${T('fantasy_team')} ft
+           WHERE ft.fantasy_league_id = $1
+         )
+         SELECT id, name, points, budget_remaining, budget_reserved, pos
+         FROM ranked WHERE id = $2`,
+        [leagueId, yourTeamId],
+      );
+      if (row) {
+        yourTeam = {
+          id: Number(row.id),
+          name: row.name,
+          position: Number(row.pos),
+          points: Number(row.points),
+          budgetRemaining: Number(row.budget_remaining),
+          budgetReserved: Number(row.budget_reserved),
+        };
+      }
+    }
+
     return {
       ranking,
       market: {
-        nextCloseAt: nextOrder?.closes_at ?? lastCycle?.closes_at ?? null,
+        nextCloseAt: nextOrders?.[0]?.closes_at ?? lastCycle?.closes_at ?? null,
+        nextCloses: nextOrders?.map((o: any) => o.closes_at) ?? [],
         cycle: lastCycle ? { id: lastCycle.id, opensAt: lastCycle.opens_at, closesAt: lastCycle.closes_at } : null,
       },
+      yourTeam,
       ledger,
       serverTime: new Date().toISOString(),
     };

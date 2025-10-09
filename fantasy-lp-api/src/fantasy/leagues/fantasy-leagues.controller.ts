@@ -45,7 +45,10 @@ export class FantasyLeaguesController {
     async getLeagueSummary(
       @Param('id', ParseIntPipe) id: number,
       @Query('top') top = '10',
+      @Query('teamId') teamId?: string,
     ) {
-      return this.svc.getLeagueSummary(id, Math.min(50, Math.max(1, Number(top) || 10)));
+      const topN = Math.min(50, Math.max(1, Number(top) || 10));
+      const tId = teamId ? Number(teamId) : undefined;
+      return this.svc.getLeagueSummary(id, topN, tId);
     }
 }

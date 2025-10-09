@@ -17,7 +17,7 @@ describe('League Summary E2E', () => {
   afterAll(async () => { await app.close(); });
   beforeEach(async () => { await resetFantasyDb(ds); await ensurePlayers(ds, 80); });
 
-  it('devuelve ranking top N, info de mercado y últimos movimientos de ledger', async () => {
+  it('devuelve ranking top N, info de mercado, próximos cierres, yourTeam y ledger', async () => {
     const { leagueId, aliceTeamId } = await createLeagueAndJoin(app, ds, 'Summary Liga');
 
     // Generar un movimiento de ledger simple (vender a la liga)
@@ -29,12 +29,16 @@ describe('League Summary E2E', () => {
 
     const res = await request(app.getHttpServer())
       .get(`/fantasy/leagues/${leagueId}/summary`)
-      .query({ top: 5 })
+      .query({ top: 5, teamId: aliceTeamId })
       .expect(200);
 
     expect(Array.isArray(res.body?.ranking)).toBe(true);
     expect(res.body?.ranking.length).toBeGreaterThan(0);
     expect(res.body?.market).toBeTruthy();
+    // Próximos cierres
+    expect(Array.isArray(res.body?.market?.nextCloses)).toBe(true);
+    // yourTeam
+    expect(res.body?.yourTeam?.id).toBe(aliceTeamId);
     expect(Array.isArray(res.body?.ledger)).toBe(true);
   });
 });
