@@ -1,6 +1,8 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { LedgerService } from './ledger.service';
 import { MembershipGuard } from '../../auth/membership.guard';
+import { User } from '../../auth/user.decorator';
+import type { AuthUser } from '../../auth/user.decorator';
 
 @Controller('fantasy/ledger')
 export class LedgerController {
@@ -16,9 +18,11 @@ export class LedgerController {
     @Query('to') to?: string,
     @Query('page') page = '1',
     @Query('pageSize') pageSize = '20',
+    @User() user?: AuthUser,
   ) {
-    const lid = Number(leagueId);
-    const tid = teamId ? Number(teamId) : undefined;
+  const lid = leagueId ? Number(leagueId) : (user?.leagueId ? Number(user.leagueId) : NaN);
+  if (!Number.isFinite(lid)) throw new BadRequestException('leagueId is required');
+  const tid = teamId ? Number(teamId) : (user?.teamId ? Number(user.teamId) : undefined);
     const p = Math.max(1, Number(page) || 1);
     const ps = Math.min(100, Math.max(1, Number(pageSize) || 20));
     return this.ledger.list({ leagueId: lid, teamId: tid, type, from, to, page: p, pageSize: ps });
