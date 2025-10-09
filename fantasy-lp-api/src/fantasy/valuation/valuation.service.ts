@@ -51,6 +51,8 @@ export class ValuationService {
         throw new BadRequestException('Jugador bloqueado');
       }
 
+      // Nota: permitimos pagar cláusula aunque existan ofertas/órdenes de mercado abiertas.
+
       // Equipo destino (fantasy) con bloqueo
       const buyers = await trx.query(
         `
@@ -63,6 +65,16 @@ export class ValuationService {
       );
       if (buyers.length === 0) throw new BadRequestException('Equipo destino inválido');
       const buyer = buyers[0];
+
+      // Capacidad del roster (máximo 6 activos)
+      const [cntRow] = await trx.query(
+        `SELECT COUNT(*)::int AS c FROM ${T('fantasy_roster_slot')} 
+         WHERE fantasy_league_id = $1 AND fantasy_team_id = $2 AND active = true`,
+        [dto.fantasyLeagueId, buyer.id],
+      );
+      if (Number(cntRow?.c ?? 0) >= 6) {
+        throw new BadRequestException('Plantilla completa: máximo 6 jugadores. Vende antes de comprar.');
+      }
 
       // Valor base (fantasy valuation)
       const vals = await trx.query(

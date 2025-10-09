@@ -3,6 +3,7 @@ import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query } from '@nestj
 import { MarketService } from './market.service';
 import { PlaceBidDto } from './dto/place-bid.dto';
 import { CreateListingDto } from './dto/create-listing.dto';
+import { SellToLeagueDto } from './dto/sell-to-league.dto';
 
 @Controller('fantasy/market')
 export class MarketController {
@@ -33,5 +34,10 @@ export class MarketController {
   @Post('cycle/rotate')
   rotate(@Query('leagueId') leagueId: string) {
     return this.svc.settleAndRotate(Number(leagueId));
+  }
+
+  @Post('sell-to-league')
+  sellToLeague(@Body() dto: SellToLeagueDto) {
+    return this.svc.sellToLeague(dto);
   }
 }

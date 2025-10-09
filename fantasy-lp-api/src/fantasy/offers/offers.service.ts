@@ -117,6 +117,16 @@ export class OffersService {
       const available = BigInt(buyer.br) - BigInt(buyer.bz);
       if (available < BigInt(offer.amount)) throw new BadRequestException('Saldo insuficiente del comprador');
 
+      // Capacidad del roster del comprador (máximo 6 activos)
+      const [cntRow] = await trx.query(
+        `SELECT COUNT(*)::int AS c FROM ${T('fantasy_roster_slot')} 
+         WHERE fantasy_league_id = $1 AND fantasy_team_id = $2 AND active = true`,
+        [offer.fantasy_league_id, buyer.id],
+      );
+      if (Number(cntRow?.c ?? 0) >= 6) {
+        throw new BadRequestException('Plantilla completa: máximo 6 jugadores. Vende antes de comprar.');
+      }
+
       await trx.query(
         `
         UPDATE ${T('fantasy_team')}

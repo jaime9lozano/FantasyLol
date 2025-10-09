@@ -51,6 +51,16 @@ describe('Offers E2E', () => {
 
     const offerId = offerRes.body?.id;
 
+    // Liberar hueco en el roster de Bob antes de aceptar (límite 6)
+    const [toSell] = await ds.query(
+      `select player_id from ${T('fantasy_roster_slot')} where fantasy_team_id = $1 and active = true limit 1`,
+      [bobTeamId],
+    );
+    await request(app.getHttpServer())
+      .post('/fantasy/market/sell-to-league')
+      .send({ fantasyLeagueId: leagueId, teamId: bobTeamId, playerId: Number(toSell.player_id) })
+      .expect(201);
+
     // Aceptar por el vendedor
     await request(app.getHttpServer())
       .post(`/fantasy/offers/${offerId}/respond`)

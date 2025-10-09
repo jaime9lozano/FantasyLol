@@ -128,13 +128,29 @@ describe('Scoring Transfer Weeks E2E', () => {
       .send({ leagueId })
       .expect(201);
 
-  // Alice paga la cláusula del MID de Bob efectivo en el inicio de Week2 (secondGame)
+  // Antes de pagar cláusulas, liberar un hueco en cada roster para respetar el límite de 6
+    const [sellAlice] = await ds.query(`SELECT player_id FROM ${T('fantasy_roster_slot')} WHERE fantasy_team_id = $1 AND active = true AND slot = 'BENCH' LIMIT 1`, [aliceTeamId]);
+    if (sellAlice) {
+      await request(app.getHttpServer()).post('/fantasy/market/sell-to-league').send({ fantasyLeagueId: leagueId, teamId: aliceTeamId, playerId: Number(sellAlice.player_id) }).expect(201);
+    } else {
+      const [anyAlice] = await ds.query(`SELECT player_id FROM ${T('fantasy_roster_slot')} WHERE fantasy_team_id = $1 AND active = true LIMIT 1`, [aliceTeamId]);
+      await request(app.getHttpServer()).post('/fantasy/market/sell-to-league').send({ fantasyLeagueId: leagueId, teamId: aliceTeamId, playerId: Number(anyAlice.player_id) }).expect(201);
+    }
+    const [sellBob] = await ds.query(`SELECT player_id FROM ${T('fantasy_roster_slot')} WHERE fantasy_team_id = $1 AND active = true AND slot = 'BENCH' LIMIT 1`, [bobTeamId]);
+    if (sellBob) {
+      await request(app.getHttpServer()).post('/fantasy/market/sell-to-league').send({ fantasyLeagueId: leagueId, teamId: bobTeamId, playerId: Number(sellBob.player_id) }).expect(201);
+    } else {
+      const [anyBob] = await ds.query(`SELECT player_id FROM ${T('fantasy_roster_slot')} WHERE fantasy_team_id = $1 AND active = true LIMIT 1`, [bobTeamId]);
+      await request(app.getHttpServer()).post('/fantasy/market/sell-to-league').send({ fantasyLeagueId: leagueId, teamId: bobTeamId, playerId: Number(anyBob.player_id) }).expect(201);
+    }
+
+    // Alice paga la cláusula del MID de Bob efectivo en el inicio de Week2 (secondGame)
     await request(app.getHttpServer())
       .post('/fantasy/valuation/pay-clause')
       .send({ fantasyLeagueId: leagueId, toTeamId: aliceTeamId, playerId: bobMid.player_id, effectiveAt: week2Start.toISOString() })
       .expect(201);
 
-  // Bob paga la cláusula del MID de Alice efectivo también al inicio de Week2
+    // Bob paga la cláusula del MID de Alice efectivo también al inicio de Week2
     await request(app.getHttpServer())
       .post('/fantasy/valuation/pay-clause')
       .send({ fantasyLeagueId: leagueId, toTeamId: bobTeamId, playerId: aliceMid.player_id, effectiveAt: week2Start.toISOString() })

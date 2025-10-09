@@ -41,7 +41,14 @@ describe('Valuation Clause Pricing E2E', () => {
     const [slot] = await ds.query(`SELECT id, player_id, clause_value::bigint AS cv FROM ${T('fantasy_roster_slot')} WHERE fantasy_team_id = $1 AND active = true LIMIT 1`, [aliceTeamId]);
     expect(slot).toBeTruthy();
 
-    // Reducir presupuesto de Bob para forzar insuficiencia (dejar budget_remaining muy bajo)
+    // Liberar un hueco en el roster de Bob (vende a la liga un jugador cualquiera para respetar límite)
+    const [toSell] = await ds.query(`SELECT player_id FROM ${T('fantasy_roster_slot')} WHERE fantasy_team_id = $1 AND active = true LIMIT 1`, [bobTeamId]);
+    await request(app.getHttpServer())
+      .post('/fantasy/market/sell-to-league')
+      .send({ fantasyLeagueId: leagueId, teamId: bobTeamId, playerId: Number(toSell.player_id) })
+      .expect(201);
+
+    // Reducir presupuesto de Bob para forzar insuficiencia (dejar budget_remaining muy bajo) tras la venta
     await ds.query(`UPDATE ${T('fantasy_team')} SET budget_remaining = 1000 WHERE id = $1`, [bobTeamId]);
 
     // Intento de compra debe fallar por saldo insuficiente

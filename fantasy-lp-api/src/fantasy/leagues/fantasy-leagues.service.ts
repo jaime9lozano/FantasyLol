@@ -147,6 +147,42 @@ export class FantasyLeaguesService {
   }
 
   /**
+   * Devuelve el ciclo de mercado abierto (o el último creado si ninguno abierto) con sus órdenes y top bids.
+   */
+  async getCurrentMarket(leagueId: number) {
+    // ciclo más reciente
+    const [cycle] = await this.ds.query(
+      `SELECT id, opens_at, closes_at FROM ${T('market_cycle')} WHERE fantasy_league_id=$1 ORDER BY id DESC LIMIT 1`,
+      [leagueId],
+    );
+    if (!cycle) return { cycle: null, orders: [], serverTime: new Date().toISOString() };
+
+    // órdenes del ciclo con highest bid y minNextBid
+    const orders = await this.ds.query(
+      `WITH topb AS (
+         SELECT mb.market_order_id,
+                MAX(mb.amount::bigint) AS top_amount
+           FROM ${T('market_bid')} mb
+          GROUP BY mb.market_order_id
+       )
+       SELECT mo.id AS order_id,
+              mo.player_id::bigint AS player_id,
+              COALESCE(tb.top_amount, 0)::bigint AS highest_bid,
+              CASE WHEN COALESCE(tb.top_amount,0) > 0 THEN (tb.top_amount + 1)::bigint ELSE GREATEST(mo.min_price::bigint, 1)::bigint END AS min_next_bid
+         FROM ${T('market_order')} mo
+         LEFT JOIN topb tb ON tb.market_order_id = mo.id
+        WHERE mo.cycle_id = $1
+        ORDER BY mo.id ASC`,
+      [cycle.id],
+    );
+    return {
+      cycle: { id: cycle.id, opensAt: cycle.opens_at, closesAt: cycle.closes_at },
+      orders,
+      serverTime: new Date().toISOString(),
+    };
+  }
+
+  /**
    * Selecciona el torneo "activo" más reciente para la liga (split actual) y cachea datos.
    * Criterio: tournament.league ILIKE code% AND date_start <= today AND (date_end IS NULL OR date_end >= today)
    * Fallback: más reciente por date_start.

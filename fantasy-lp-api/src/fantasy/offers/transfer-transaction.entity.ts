@@ -4,7 +4,7 @@ import { FantasyLeague } from '../leagues/fantasy-league.entity';
 import { FantasyTeam } from '../teams/fantasy-team.entity';
 import { Player } from 'src/entities/player.entity';
 
-export type TransferType = 'AUCTION_WIN'|'CLAUSE_PAID'|'OFFER_ACCEPTED'|'LISTING_SOLD';
+export type TransferType = 'AUCTION_WIN'|'CLAUSE_PAID'|'OFFER_ACCEPTED'|'LISTING_SOLD'|'SELL_TO_LEAGUE';
 
 @Entity({ name: 'transfer_transaction' })
 export class TransferTransaction {

@@ -46,6 +46,14 @@ export async function resetFantasyDb(ds: DataSource): Promise<void> {
         ALTER TABLE ${T('market_order')} ALTER COLUMN owner_team_id DROP NOT NULL;
       EXCEPTION WHEN others THEN NULL; END;
     END $$;`);
+  // Ampliar CHECK de transfer_transaction.type si existe para permitir SELL_TO_LEAGUE
+  await qr.query(`DO $$ BEGIN
+    BEGIN
+      ALTER TABLE ${T('transfer_transaction')} DROP CONSTRAINT IF EXISTS transfer_transaction_type_check;
+      ALTER TABLE ${T('transfer_transaction')} ADD CONSTRAINT transfer_transaction_type_check
+        CHECK (type IN ('AUCTION_WIN','CLAUSE_PAID','OFFER_ACCEPTED','LISTING_SOLD','SELL_TO_LEAGUE'));
+    EXCEPTION WHEN others THEN NULL; END;
+  END $$;`);
     await qr.query(`
       truncate table
         ${T('market_bid')},

@@ -36,6 +36,16 @@ describe('Valuation E2E', () => {
     );
     const playerId = Number(row.player_id);
 
+    // Liberar un hueco en el roster de Bob (vende a la liga un jugador cualquiera)
+    const [toSell] = await ds.query(
+      `select player_id from ${T('fantasy_roster_slot')} where fantasy_team_id = $1 and active = true limit 1`,
+      [bobTeamId],
+    );
+    await request(app.getHttpServer())
+      .post('/fantasy/market/sell-to-league')
+      .send({ fantasyLeagueId: leagueId, teamId: bobTeamId, playerId: Number(toSell.player_id) })
+      .expect(201);
+
     await request(app.getHttpServer())
       .post('/fantasy/valuation/pay-clause')
       .send({
@@ -60,6 +70,16 @@ describe('Valuation E2E', () => {
     );
     const playerId = Number(row.player_id);
     // Con league_id ya no forzamos inelegibilidad cambiando torneo; omitimos este negativo
+
+    // Liberar un hueco en el roster de Bob antes de pagar cláusula
+    const [toSell] = await ds.query(
+      `select player_id from ${T('fantasy_roster_slot')} where fantasy_team_id = $1 and active = true limit 1`,
+      [bobTeamId],
+    );
+    await request(app.getHttpServer())
+      .post('/fantasy/market/sell-to-league')
+      .send({ fantasyLeagueId: leagueId, teamId: bobTeamId, playerId: Number(toSell.player_id) })
+      .expect(201);
 
     await request(app.getHttpServer())
       .post('/fantasy/valuation/pay-clause')

@@ -38,7 +38,11 @@ describe('Market Cycle E2E', () => {
     const players: number[] = startRes.body.playerIds;
     expect(players.length).toBeGreaterThan(0);
 
-    // Pujar por el primero con Bob
+  // Vender uno de Bob para liberar cupo
+  const [bobSome] = await ds.query(`SELECT player_id FROM ${T('fantasy_roster_slot')} WHERE fantasy_team_id=$1 AND active=true LIMIT 1`, [bobTeamId]);
+  await request(app.getHttpServer()).post('/fantasy/market/sell-to-league').send({ fantasyLeagueId: leagueId, teamId: bobTeamId, playerId: Number(bobSome.player_id) }).expect(201);
+
+  // Pujar por el primero con Bob
     const target = players[0];
     const [bobBudget] = await ds.query(`SELECT budget_remaining::bigint AS b FROM ${T('fantasy_team')} WHERE id = $1`, [bobTeamId]);
     const amount = Number(bobBudget.b) > 100000 ? 100000 : 50000;

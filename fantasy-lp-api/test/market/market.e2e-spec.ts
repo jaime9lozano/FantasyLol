@@ -52,6 +52,13 @@ describe('Market E2E', () => {
       [orderId],
     );
 
+    // Vender un jugador de Bob para liberar cupo (máximo 6 jugadores activos)
+    const [bobSome] = await ds.query(`select player_id from ${T('fantasy_roster_slot')} where fantasy_team_id = $1 and active = true limit 1`, [bobTeamId]);
+    await request(app.getHttpServer())
+      .post('/fantasy/market/sell-to-league')
+      .send({ fantasyLeagueId: leagueId, teamId: bobTeamId, playerId: Number(bobSome.player_id) })
+      .expect(201);
+
     await request(app.getHttpServer())
       .post('/fantasy/market/bid')
       .send({ marketOrderId: orderId, bidderTeamId: bobTeamId, amount: 1_800_000 })

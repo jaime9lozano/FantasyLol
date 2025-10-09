@@ -35,4 +35,9 @@ export class FantasyLeaguesController {
   updateEconomic(@Param('id') id: string, @Body() body: any) {
     return this.svc.updateEconomicConfig(Number(id), body);
   }
+
+  @Get(':id/market/current')
+  currentMarket(@Param('id') id: string) {
+    return this.svc.getCurrentMarket(Number(id));
+  }
 }
