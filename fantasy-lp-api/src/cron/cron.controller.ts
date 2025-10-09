@@ -1,4 +1,6 @@
-import { Controller, Post, Query, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Query, BadRequestException, UseGuards } from '@nestjs/common';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
 import { CronJobsService } from './cron.service';
 
 type JobKey = 'leagues' | 'tournaments' | 'teams-players' | 'games' | 'stats' | 'roster';
@@ -9,6 +11,8 @@ const ALLOWED: JobKey[] = ['leagues', 'tournaments', 'teams-players', 'games', '
 export class CronController {
   constructor(private readonly cron: CronJobsService) {}
 
+  @UseGuards(RolesGuard)
+  @Roles('admin')
   @Post('run')
   async run(@Query('job') job: string) {
     const key = (job || '').toLowerCase() as JobKey;
@@ -33,6 +37,8 @@ export class CronController {
   }
 
   // (Opcional) Ejecutar toda la tubería en orden seguro
+  @UseGuards(RolesGuard)
+  @Roles('admin')
   @Post('run-all')
   async runAll() {
     const res: Record<string, unknown> = {};

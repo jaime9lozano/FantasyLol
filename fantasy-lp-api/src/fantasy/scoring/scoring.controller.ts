@@ -5,13 +5,16 @@ import { ComputePeriodDto } from './dto/compute-period.dto';
 import { MembershipGuard } from '../../auth/membership.guard';
 import { User } from '../../auth/user.decorator';
 import type { AuthUser } from '../../auth/user.decorator';
+import { RolesGuard } from '../../auth/roles.guard';
+import { Roles } from '../../auth/roles.decorator';
 
 @Controller('fantasy/scoring')
 export class ScoringController {
   constructor(private readonly svc: ScoringService) {}
 
   // /diag para recálculo manual
-  @UseGuards(MembershipGuard)
+  @UseGuards(MembershipGuard, RolesGuard)
+  @Roles('admin')
   @Post('compute')
   @HttpCode(HttpStatus.CREATED)
   compute(@Body() dto: ComputePeriodDto, @User() user?: AuthUser) {
@@ -19,7 +22,8 @@ export class ScoringController {
     return this.svc.computeForPeriod(Number(leagueId), dto.periodId);
   }
   
-  @UseGuards(MembershipGuard)
+  @UseGuards(MembershipGuard, RolesGuard)
+  @Roles('admin')
   @Post('backfill-all')
   @HttpCode(HttpStatus.CREATED)
   backfillAll(@Body() dto: { fantasyLeagueId?: number }, @User() user?: AuthUser) {
@@ -27,7 +31,8 @@ export class ScoringController {
     return this.svc.backfillAllPlayerPoints(Number(leagueId));
   }
 
-  @UseGuards(MembershipGuard)
+  @UseGuards(MembershipGuard, RolesGuard)
+  @Roles('admin')
   @Post('auto-periods')
   @HttpCode(HttpStatus.CREATED)
   autoPeriods(@Body() dto: { fantasyLeagueId?: number; strategy?: string }, @User() user?: AuthUser) {

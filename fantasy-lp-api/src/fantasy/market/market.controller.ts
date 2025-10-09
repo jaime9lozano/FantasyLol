@@ -8,6 +8,8 @@ import { SellToLeagueDto } from './dto/sell-to-league.dto';
 import { MembershipGuard } from '../../auth/membership.guard';
 import { User } from '../../auth/user.decorator';
 import type { AuthUser } from '../../auth/user.decorator';
+import { RolesGuard } from '../../auth/roles.guard';
+import { Roles } from '../../auth/roles.decorator';
 
 @Controller('fantasy/market')
 export class MarketController {
@@ -33,7 +35,8 @@ export class MarketController {
   }
 
   // /diag: cierra subastas vencidas (debug manual)
-  @UseGuards(MembershipGuard)
+  @UseGuards(MembershipGuard, RolesGuard)
+  @Roles('admin')
   @Throttle({ default: { limit: 5, ttl: 60000 } }) // cerrar subastas
   @Post('close')
   @HttpCode(HttpStatus.OK)
@@ -41,14 +44,16 @@ export class MarketController {
     return this.svc.closeDailyAuctions(Number(leagueId));
   }
 
-  @UseGuards(MembershipGuard)
+  @UseGuards(MembershipGuard, RolesGuard)
+  @Roles('admin')
   @Throttle({ default: { limit: 5, ttl: 60000 } }) // iniciar ciclo
   @Post('cycle/start')
   startCycle(@Query('leagueId') leagueId: string) {
     return this.svc.startNewCycle(Number(leagueId));
   }
 
-  @UseGuards(MembershipGuard)
+  @UseGuards(MembershipGuard, RolesGuard)
+  @Roles('admin')
   @Throttle({ default: { limit: 5, ttl: 60000 } }) // rotar ciclo
   @Post('cycle/rotate')
   rotate(@Query('leagueId') leagueId: string) {

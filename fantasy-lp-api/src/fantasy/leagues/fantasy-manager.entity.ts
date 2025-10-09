@@ -13,6 +13,9 @@ export class FantasyManager {
   // Hash de contraseña (bcrypt). Opcional para compatibilidad con datos previos de tests.
   @Column({ name: 'password_hash', type: 'text', nullable: true }) passwordHash?: string | null;
 
+  // Hash del refresh token actual (rotado en cada refresh/login). Opcional.
+  @Column({ name: 'refresh_token_hash', type: 'text', nullable: true }) refreshTokenHash?: string | null;
+
   // Rol del usuario: 'manager' | 'admin' (o 'dev' desde dev-login)
   @Column({ type: 'text', default: 'manager', nullable: true }) role?: string | null;
 

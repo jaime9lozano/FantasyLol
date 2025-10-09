@@ -17,6 +17,14 @@ export interface LoginDto {
   password: string;
 }
 
+export interface UpdateProfileDto {
+  displayName?: string;
+  email?: string;
+  password?: string;
+}
+
+export interface RefreshDto { refreshToken: string }
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -42,12 +50,53 @@ export class AuthService {
     if (!user?.passwordHash) throw new UnauthorizedException('Credenciales inválidas');
     const ok = await bcrypt.compare(dto.password, user.passwordHash);
     if (!ok) throw new UnauthorizedException('Credenciales inválidas');
-    const token = this.signToken(user);
-    return { access_token: token, payload: this.payload(user) };
+    // Emitir access y refresh; guardar hash del refresh para rotación
+    const { access, refresh } = this.issueTokens(user);
+    user.refreshTokenHash = await bcrypt.hash(refresh, 10);
+    await this.managers.save(user);
+    return { access_token: access, refresh_token: refresh, payload: this.payload(user) };
   }
 
   private payload(u: FantasyManager) {
     return { sub: u.id, name: u.displayName, leagueId: null, teamId: null, role: u.role ?? 'manager' };
   }
   private signToken(u: FantasyManager) { return this.jwt.sign(this.payload(u)); }
+  private issueTokens(u: FantasyManager) {
+    const access = this.jwt.sign(this.payload(u));
+    const refreshPayload = { sub: u.id, type: 'refresh' };
+    const refresh = this.jwt.sign(refreshPayload, { expiresIn: '30d' });
+    return { access, refresh };
+  }
+
+  async me(userId: number) {
+    const u = await this.managers.findOne({ where: { id: userId } });
+    if (!u) throw new UnauthorizedException();
+    return { id: u.id, displayName: u.displayName, email: u.email, role: u.role };
+  }
+
+  async updateProfile(userId: number, dto: UpdateProfileDto) {
+    const u = await this.managers.findOne({ where: { id: userId } });
+    if (!u) throw new UnauthorizedException();
+    if (dto.email) {
+      const email = dto.email.toLowerCase();
+      const exists = await this.managers.findOne({ where: { email } });
+      if (exists && exists.id !== userId) throw new BadRequestException('Email ya en uso');
+      u.email = email;
+    }
+    if (dto.displayName) u.displayName = dto.displayName;
+    if (dto.password) u.passwordHash = await bcrypt.hash(dto.password, 10);
+    await this.managers.save(u);
+    return { id: u.id, displayName: u.displayName, email: u.email, role: u.role };
+  }
+
+  async refresh(userId: number, dto: RefreshDto) {
+    const u = await this.managers.findOne({ where: { id: userId } });
+    if (!u?.refreshTokenHash) throw new UnauthorizedException('Refresh inválido');
+    const ok = await bcrypt.compare(dto.refreshToken, u.refreshTokenHash);
+    if (!ok) throw new UnauthorizedException('Refresh inválido');
+    const { access, refresh } = this.issueTokens(u);
+    u.refreshTokenHash = await bcrypt.hash(refresh, 10);
+    await this.managers.save(u);
+    return { access_token: access, refresh_token: refresh };
+  }
 }

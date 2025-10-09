@@ -9,6 +9,8 @@ import { MembershipGuard } from '../../auth/membership.guard';
 import { User } from '../../auth/user.decorator';
 import type { AuthUser } from '../../auth/user.decorator';
 import { Public } from '../../auth/public.decorator';
+import { RolesGuard } from '../../auth/roles.guard';
+import { Roles } from '../../auth/roles.decorator';
 
 @Controller('fantasy/leagues')
 export class FantasyLeaguesController {
@@ -33,11 +35,15 @@ export class FantasyLeaguesController {
     return this.svc.ranking(Number(id));
   }
 
+  @UseGuards(RolesGuard)
+  @Roles('admin')
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateLeagueDto) {
     return this.svc.updateLeague(Number(id), dto);
   }
 
+  @UseGuards(RolesGuard)
+  @Roles('admin')
   @Patch(':id/economic-config')
   updateEconomic(@Param('id') id: string, @Body() body: any) {
     return this.svc.updateEconomicConfig(Number(id), body);

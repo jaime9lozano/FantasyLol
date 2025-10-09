@@ -1,8 +1,10 @@
-import { Body, Controller, ForbiddenException, Post } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Post, Put } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Public } from './public.decorator';
 import { AuthService } from './auth.service';
-import type { LoginDto, RegisterDto } from './auth.service';
+import type { LoginDto, RegisterDto, UpdateProfileDto, RefreshDto } from './auth.service';
+import { User } from './user.decorator';
+import type { AuthUser } from './user.decorator';
 
 type DevLoginDto = {
   userId: number;
@@ -46,5 +48,22 @@ export class AuthController {
   @Post('login')
   login(@Body() body: LoginDto) {
     return this.auth.login(body);
+  }
+
+  // Perfil actual
+  @Get('me')
+  me(@User() user?: AuthUser) {
+    return this.auth.me(Number(user?.userId));
+  }
+
+  @Put('me')
+  updateMe(@Body() body: UpdateProfileDto, @User() user?: AuthUser) {
+    return this.auth.updateProfile(Number(user?.userId), body);
+  }
+
+  // Refresh tokens (requiere estar autenticado para asociar al userId)
+  @Post('refresh')
+  refresh(@Body() body: RefreshDto, @User() user?: AuthUser) {
+    return this.auth.refresh(Number(user?.userId), body);
   }
 }

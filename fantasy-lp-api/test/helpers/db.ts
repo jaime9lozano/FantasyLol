@@ -23,6 +23,9 @@ export async function resetFantasyDb(ds: DataSource): Promise<void> {
         ALTER TABLE ${T('fantasy_manager')} ADD COLUMN IF NOT EXISTS role text NULL DEFAULT 'manager';
       EXCEPTION WHEN others THEN NULL; END;
       BEGIN
+        ALTER TABLE ${T('fantasy_manager')} ADD COLUMN IF NOT EXISTS refresh_token_hash text NULL;
+      EXCEPTION WHEN others THEN NULL; END;
+      BEGIN
         CREATE TABLE IF NOT EXISTS ${T('fantasy_budget_ledger')} (
           id bigserial PRIMARY KEY,
           fantasy_league_id int NOT NULL,
