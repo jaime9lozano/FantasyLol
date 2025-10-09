@@ -23,6 +23,43 @@ export class FantasyTeamsService {
     });
   }
 
+  async getCompactRoster(teamId: number) {
+    // Datos mínimos para la home: slots ordenados, jugador, starter, valores y bloqueos
+    const rows = await this.ds.query(
+      `SELECT frs.id,
+              frs.slot,
+              frs.starter,
+              frs.locked_until,
+              p.id AS player_id,
+              p.display_name AS player_name,
+              COALESCE(fpv.current_value, 0)::bigint AS value
+       FROM ${T('fantasy_roster_slot')} frs
+       JOIN public.player p ON p.id = frs.player_id
+       LEFT JOIN ${T('fantasy_player_valuation')} fpv
+              ON fpv.fantasy_league_id = frs.fantasy_league_id AND fpv.player_id = frs.player_id
+       WHERE frs.fantasy_team_id = $1 AND frs.active = true
+       ORDER BY CASE frs.slot
+                  WHEN 'TOP' THEN 1
+                  WHEN 'JNG' THEN 2
+                  WHEN 'MID' THEN 3
+                  WHEN 'ADC' THEN 4
+                  WHEN 'SUP' THEN 5
+                  ELSE 6
+                END,
+                frs.starter DESC,
+                frs.id ASC`,
+      [teamId],
+    );
+    return rows.map((r: any) => ({
+      id: Number(r.id),
+      slot: r.slot,
+      starter: r.starter,
+      lockedUntil: r.locked_until,
+      player: { id: Number(r.player_id), name: r.player_name },
+      value: Number(r.value),
+    }));
+  }
+
   async moveLineup(teamId: number, dto: MoveLineupDto) {
     return this.ds.transaction(async (trx) => {
       const slot = await trx.findOne(FantasyRosterSlot, {
