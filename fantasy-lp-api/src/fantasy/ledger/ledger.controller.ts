@@ -1,10 +1,13 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { LedgerService } from './ledger.service';
+import { OptionalJwtAuthGuard } from '../../auth/optional-jwt.guard';
+import { MembershipGuard } from '../../auth/membership.guard';
 
 @Controller('fantasy/ledger')
 export class LedgerController {
   constructor(private ledger: LedgerService) {}
 
+  @UseGuards(OptionalJwtAuthGuard, MembershipGuard)
   @Get()
   async list(
     @Query('leagueId') leagueId: string,

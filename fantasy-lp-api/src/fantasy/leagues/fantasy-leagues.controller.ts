@@ -1,9 +1,11 @@
 // src/fantasy/leagues/fantasy-leagues.controller.ts
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, Query, ParseIntPipe } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, Query, ParseIntPipe, UseGuards } from '@nestjs/common';
 import { FantasyLeaguesService } from './fantasy-leagues.service';
 import { CreateFantasyLeagueDto } from './dto/create-fantasy-league.dto';
 import { JoinLeagueDto } from './dto/join-league.dto';
 import { UpdateLeagueDto } from './dto/update-league.dto';
+import { OptionalJwtAuthGuard } from '../../auth/optional-jwt.guard';
+import { MembershipGuard } from '../../auth/membership.guard';
 
 @Controller('fantasy/leagues')
 export class FantasyLeaguesController {
@@ -36,11 +38,13 @@ export class FantasyLeaguesController {
     return this.svc.updateEconomicConfig(Number(id), body);
   }
 
+  @UseGuards(OptionalJwtAuthGuard, MembershipGuard)
   @Get(':id/market/current')
   currentMarket(@Param('id') id: string) {
     return this.svc.getCurrentMarket(Number(id));
   }
   
+    @UseGuards(OptionalJwtAuthGuard, MembershipGuard)
     @Get(':id/summary')
     async getLeagueSummary(
       @Param('id', ParseIntPipe) id: number,
