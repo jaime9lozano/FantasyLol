@@ -4,6 +4,8 @@ import { Repository } from 'typeorm';
 import { FantasyManager } from '../fantasy/leagues/fantasy-manager.entity';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
+import { FantasyTeam } from '../fantasy/teams/fantasy-team.entity';
+import { FantasyLeague } from '../fantasy/leagues/fantasy-league.entity';
 
 export interface RegisterDto {
   displayName: string;
@@ -29,6 +31,8 @@ export interface RefreshDto { refreshToken: string }
 export class AuthService {
   constructor(
     @InjectRepository(FantasyManager) private readonly managers: Repository<FantasyManager>,
+    @InjectRepository(FantasyTeam) private readonly teams: Repository<FantasyTeam>,
+    @InjectRepository(FantasyLeague) private readonly leagues: Repository<FantasyLeague>,
     private readonly jwt: JwtService,
   ) {}
 
@@ -71,7 +75,8 @@ export class AuthService {
   async me(userId: number) {
     const u = await this.managers.findOne({ where: { id: userId } });
     if (!u) throw new UnauthorizedException();
-    return { id: u.id, displayName: u.displayName, email: u.email, role: u.role };
+    const memberships = await this.memberships(userId);
+    return { id: u.id, displayName: u.displayName, email: u.email, role: u.role, memberships };
   }
 
   async updateProfile(userId: number, dto: UpdateProfileDto) {
@@ -109,5 +114,44 @@ export class AuthService {
     u.refreshTokenHash = await bcrypt.hash(refresh, 10);
     await this.managers.save(u);
     return { access_token: access, refresh_token: refresh };
+  }
+
+  /** Devuelve las ligas/equipos a los que pertenece este manager. */
+  async memberships(userId: number) {
+    const rows = await this.teams.createQueryBuilder('t')
+      .innerJoinAndSelect('t.fantasyLeague', 'l')
+      .innerJoin('t.fantasyManager', 'm')
+      .where('m.id = :uid', { uid: userId })
+      .select([
+        't.id AS team_id',
+        't.name AS team_name',
+        'l.id AS league_id',
+        'l.name AS league_name',
+        'l.sourceLeagueCode AS source_league_code',
+      ])
+      .getRawMany();
+    return rows.map((r) => ({
+      teamId: Number(r.team_id),
+      teamName: r.team_name,
+      leagueId: Number(r.league_id),
+      leagueName: r.league_name,
+      sourceLeagueCode: r.source_league_code || null,
+    }));
+  }
+
+  /** Emite un access token con contexto de liga/equipo del manager. */
+  async selectContext(userId: number, leagueId: number) {
+    const team = await this.teams.findOne({
+      where: {
+        fantasyManager: { id: userId } as any,
+        fantasyLeague: { id: leagueId } as any,
+      },
+      relations: { fantasyManager: true, fantasyLeague: true },
+    });
+    if (!team) throw new UnauthorizedException('No perteneces a esta liga');
+    const manager = team.fantasyManager as FantasyManager;
+    const payload = { sub: manager.id, name: manager.displayName, role: manager.role ?? 'manager', leagueId, teamId: team.id };
+    const access_token = this.jwt.sign(payload);
+    return { access_token, payload };
   }
 }

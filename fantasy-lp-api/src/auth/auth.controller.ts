@@ -102,4 +102,25 @@ export class AuthController {
   refresh(@Body() body: RefreshDto, @User() user?: AuthUser) {
     return this.auth.refresh(user?.userId ? Number(user.userId) : undefined, body);
   }
+
+  // Discovery: listar ligas/equipos del manager autenticado
+  @ApiBearerAuth('bearer')
+  @Get('memberships')
+  memberships(@User() user?: AuthUser) {
+    return this.auth.memberships(Number(user?.userId));
+  }
+
+  // Seleccionar contexto de liga: genera access con leagueId/teamId inferidos
+  @ApiBearerAuth('bearer')
+  @Post('context/select')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: { leagueId: { type: 'number', example: 1 } },
+      required: ['leagueId'],
+    },
+  })
+  selectContext(@Body('leagueId') leagueId: number, @User() user?: AuthUser) {
+    return this.auth.selectContext(Number(user?.userId), Number(leagueId));
+  }
 }
