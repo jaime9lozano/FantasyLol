@@ -1,5 +1,6 @@
 // src/fantasy/teams/fantasy-teams.controller.ts
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { FantasyTeamsService } from './fantasy-teams.service';
 import { MoveLineupDto } from './dto/move-lineup.dto';
 import { DataSource } from 'typeorm';
@@ -29,16 +30,19 @@ export class FantasyTeamsController {
 
   @Post(':id/lineup')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(MembershipGuard)
   move(@Param('id') id: string, @Body() dto: MoveLineupDto) {
     return this.svc.moveLineup(Number(id), dto);
   }
 
   @Get('free-agents/:leagueId')
+  @Throttle({ default: { limit: 60, ttl: 60000 } }) // hasta 60 consultas/min por cliente
   freeAgents(@Param('leagueId') leagueId: string) {
     return this.svc.freeAgents(Number(leagueId));
   }
 
   @Get(':teamId/player/:playerId/stats')
+  @Throttle({ default: { limit: 60, ttl: 60000 } }) // hasta 60 consultas/min por cliente
   async playerStats(
     @Param('teamId') teamId: string,
     @Param('playerId') playerId: string,

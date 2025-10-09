@@ -89,8 +89,19 @@ export class AuthService {
     return { id: u.id, displayName: u.displayName, email: u.email, role: u.role };
   }
 
-  async refresh(userId: number, dto: RefreshDto) {
-    const u = await this.managers.findOne({ where: { id: userId } });
+  async refresh(userId: number | undefined, dto: RefreshDto) {
+    // Si no viene userId (no access token), intentar derivarlo del refresh token
+    let targetUserId = userId;
+    if (!targetUserId) {
+      try {
+        const decoded: any = this.jwt.verify(dto.refreshToken);
+        if (decoded?.type !== 'refresh' || !decoded?.sub) throw new Error('invalid');
+        targetUserId = Number(decoded.sub);
+      } catch (e) {
+        throw new UnauthorizedException('Refresh inválido');
+      }
+    }
+    const u = await this.managers.findOne({ where: { id: targetUserId } });
     if (!u?.refreshTokenHash) throw new UnauthorizedException('Refresh inválido');
     const ok = await bcrypt.compare(dto.refreshToken, u.refreshTokenHash);
     if (!ok) throw new UnauthorizedException('Refresh inválido');

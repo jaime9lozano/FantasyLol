@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { HealthController } from './health/health.controller';
 import { DatabaseModule } from './database/database.module';
 import { LeaguepediaModule } from './leaguepedia/leaguepedia.module';
 import { ConfigModule } from '@nestjs/config';
@@ -38,7 +39,7 @@ imports: [
     AuthModule,
   ],
 
-  controllers: [AppController],
+  controllers: [AppController, HealthController],
   providers: [
     AppService,
     // Guard global estilo @Public + Optional JWT

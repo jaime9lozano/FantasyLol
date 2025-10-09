@@ -2,6 +2,12 @@
 
 API NestJS para Fantasy League of Legends.
 
+## Swagger (OpenAPI)
+
+- UI: `/docs` (por defecto habilitado en dev/test; controla con `ENABLE_SWAGGER=false` para desactivar).
+- Autorización: pulsa "Authorize" y pega `Bearer <access_token>` o sólo el token (el esquema añade el prefijo Bearer).
+- Endpoints de auth (/auth/login, /auth/register, /auth/refresh) están documentados para probar rápidamente.
+
 ## Seguridad y autenticación
 
 Este proyecto implementa un bloque de seguridad opt‑in basado en JWT que no rompe los flujos locales ni los tests por defecto.
@@ -39,6 +45,7 @@ Este proyecto implementa un bloque de seguridad opt‑in basado en JWT que no ro
 - `RATE_LIMIT_TTL` (number): ventana global en segundos para Throttler.
 - `RATE_LIMIT_LIMIT` (number): solicitudes permitidas por ventana (global).
  - `ALLOW_REGISTER_ADMIN` (boolean): si es `true`, el endpoint de registro permite crear usuarios con rol `admin`.
+ - `ENABLE_SWAGGER` (boolean): controla la generación de Swagger UI en `/docs` (default: true si no se define).
 
 Ejemplo `.env` (desarrollo):
 
@@ -93,7 +100,7 @@ Rutas públicas:
 Respuesta común:
 
 ```
-{ "access_token": "<jwt>", "payload": { sub, name, role, leagueId: null, teamId: null } }
+{ "access_token": "<jwt>", "refresh_token": "<jwt-refresh>", "payload": { sub, name, role, leagueId: null, teamId: null } }
 ```
 
 Para proteger rutas administrativas, usa `@UseGuards(RolesGuard)` y `@Roles('admin')`.
@@ -116,13 +123,22 @@ Si la petición va autenticada, el backend infiere automáticamente `teamId`/`le
 
 Esto reduce la superficie de error en el cliente y endurece la validación de pertenencia.
 
+### Refresh token sin access (Bearer refresh)
+
+`POST /auth/refresh` acepta solo el `refresh_token` sin necesidad de un access token. El servidor valida la firma, que `type==='refresh'`, y que coincida con el hash almacenado (rotación en cada uso). Respuesta: nuevos `access_token` y `refresh_token`.
+
 ## Protección de rutas y alcance
 
 - Guard global: aplica autenticación JWT salvo rutas anotadas con `@Public()`.
 - `MembershipGuard` se aplica a rutas sensibles de lectura/escritura:
   - Mercado, Ledger, Valoración, Scoring, Roster/Compact, Summary.
-- Rutas públicas explícitas para bootstrap en test/dev:
+- Rutas públicas explícitas:
   - `POST /auth/dev-login`, `POST /fantasy/leagues`, `POST /fantasy/leagues/join`.
+  - `GET /fantasy/teams/free-agents/:leagueId` (throttled)
+  - `GET /fantasy/teams/:teamId/player/:playerId/stats?leagueId=...` (throttled)
+
+Rutas protegidas destacadas:
+- `POST /fantasy/teams/:id/lineup` ahora requiere pertenencia (MembershipGuard).
 
 ## WebSockets: unión por liga con token
 
@@ -137,7 +153,7 @@ Eventos emitidos (solo ejemplo):
 - `market.order.awarded` { orderId, playerId, toTeamId, amount }
 - `market.order.closed` { orderId }
 
-## Rate limiting por endpoint (mercado)
+## Rate limiting por endpoint
 
 Además del límite global, en el módulo de mercado se añaden límites finos:
 - `POST /fantasy/market/listing`: 10/min
@@ -147,7 +163,14 @@ Además del límite global, en el módulo de mercado se añaden límites finos:
 - `POST /fantasy/market/cycle/rotate`: 5/min
 - `POST /fantasy/market/sell-to-league`: 10/min
 
+En equipos (públicos), se limita a 60/min por cliente para `free-agents` y `player stats`.
+
 Estos valores son orientativos y ajustables según carga real.
+
+## Healthcheck y logs
+
+- `GET /health` devuelve `{ status: 'ok', uptime: <segundos> }`.
+- Logs de arranque incluyen puerto, URL de Swagger y flags de seguridad.
 
 ## Tests E2E
 

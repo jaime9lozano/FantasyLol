@@ -61,9 +61,10 @@ export class AuthController {
     return this.auth.updateProfile(Number(user?.userId), body);
   }
 
-  // Refresh tokens (requiere estar autenticado para asociar al userId)
+  // Refresh tokens: permite usar sólo el refresh token (Bearer refresh no requerido)
+  @Public()
   @Post('refresh')
   refresh(@Body() body: RefreshDto, @User() user?: AuthUser) {
-    return this.auth.refresh(Number(user?.userId), body);
+    return this.auth.refresh(user?.userId ? Number(user.userId) : undefined, body);
   }
 }
