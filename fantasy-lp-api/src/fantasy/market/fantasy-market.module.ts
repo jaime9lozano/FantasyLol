@@ -10,11 +10,12 @@ import { FantasyTeam } from '../teams/fantasy-team.entity';
 import { FantasyRosterSlot } from '../teams/fantasy-roster-slot.entity';
 import { FantasyLeague } from '../leagues/fantasy-league.entity';
 import { FantasyPlayerValuation } from '../valuation/fantasy-player-valuation.entity';
+import { MarketGateway } from './market.gateway';
 
 @Module({
   imports: [TypeOrmModule.forFeature([MarketOrder, MarketBid, MarketCycle, FantasyTeam, FantasyRosterSlot, FantasyLeague, FantasyPlayerValuation])],
   controllers: [MarketController],
-  providers: [MarketService],
-  exports: [TypeOrmModule, MarketService],
+  providers: [MarketService, MarketGateway],
+  exports: [TypeOrmModule, MarketService, MarketGateway],
 })
 export class FantasyMarketModule {}

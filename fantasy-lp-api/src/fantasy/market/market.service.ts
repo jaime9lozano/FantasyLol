@@ -14,6 +14,7 @@ import { MarketCycle } from './market-cycle.entity';
 import { T } from '../../database/schema.util';
 import { assertPlayerEligible } from '../leagues/league-pool.util';
 import { SellToLeagueDto } from './dto/sell-to-league.dto';
+import { MarketGateway } from './market.gateway';
 
 @Injectable()
 export class MarketService {
@@ -26,6 +27,7 @@ export class MarketService {
     @InjectRepository(FantasyPlayerValuation) private valuations: Repository<FantasyPlayerValuation>,
     @InjectDataSource() private ds: DataSource,
     @InjectRepository(MarketCycle) private cycles: Repository<MarketCycle>,
+    private gateway: MarketGateway,
   ) {}
 
   private parseTime(t: string): { hh: number; mm: number } {
@@ -72,7 +74,7 @@ export class MarketService {
   }
 
   async placeBid(dto: PlaceBidDto, now = new Date()) {
-    return this.ds.transaction(async (trx) => {
+    const result = await this.ds.transaction(async (trx) => {
       const orderRows = await trx.query(
         `
         SELECT id, fantasy_league_id, player_id, min_price::bigint AS min_price, closes_at, status
@@ -152,8 +154,11 @@ export class MarketService {
         [order.id, team.id, dto.amount.toString()],
       );
 
-      return { bidId: bidRows[0].id, reserved: extraToReserve.toString(), minRequired };
+      return { bidId: bidRows[0].id, reserved: extraToReserve.toString(), minRequired, orderId: order.id, leagueId };
     });
+    // Emitir evento WS fuera de la transacción
+    try { this.gateway.emitBidPlaced(result.leagueId, { orderId: result.orderId, teamId: Number(dto.bidderTeamId), amount: Number(dto.amount) }); } catch {}
+    return { bidId: result.bidId, reserved: result.reserved, minRequired: result.minRequired };
   }
 
   async closeDailyAuctions(fantasyLeagueId: number, now = new Date()) {
@@ -195,6 +200,7 @@ export class MarketService {
 
         if (!topBidders.length) {
           await trx.query(`UPDATE ${T('market_order')} SET status='CLOSED', closes_at=now(), updated_at=now() WHERE id=$1`, [order.id]);
+          try { this.gateway.emitOrderClosed(fantasyLeagueId, { orderId: order.id }); } catch {}
           continue;
         }
 
@@ -278,6 +284,10 @@ export class MarketService {
             [fantasyLeagueId, order.player_id, order.owner_team_id, team.id, winAmount.toString()],
           );
           await trx.query(`UPDATE ${T('market_order')} SET status='CLOSED', closes_at=now(), updated_at=now() WHERE id=$1`, [order.id]);
+          try {
+            this.gateway.emitOrderAwarded(fantasyLeagueId, { orderId: order.id, playerId: Number(order.player_id), toTeamId: team.id, amount: Number(winAmount) });
+            this.gateway.emitOrderClosed(fantasyLeagueId, { orderId: order.id });
+          } catch {}
 
           settledCount++;
           break;
@@ -301,6 +311,7 @@ export class MarketService {
             );
           }
           await trx.query(`UPDATE ${T('market_order')} SET status='CLOSED', closes_at=now(), updated_at=now() WHERE id=$1`, [order.id]);
+          try { this.gateway.emitOrderClosed(fantasyLeagueId, { orderId: order.id }); } catch {}
         }
       }
 
@@ -426,7 +437,10 @@ export class MarketService {
           [fantasyLeagueId, pid, now, cycle.closesAt, saved.id],
         );
       }
-      return { cycleId: saved.id, playerIds: chosen };
+      const payload = { cycleId: saved.id, playerIds: chosen };
+      // Emitir evento de nuevo ciclo
+      try { this.gateway.emitCycleStarted(fantasyLeagueId, payload); } catch {}
+      return payload;
     });
   }
 

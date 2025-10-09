@@ -1,6 +1,7 @@
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { MarketGateway } from './fantasy/market/market.gateway';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -15,5 +16,7 @@ async function bootstrap() {
   );
 
   await app.listen(process.env.PORT ? Number(process.env.PORT) : 3000);
+  // Enlazar manejador de join.league para rooms
+  try { app.get(MarketGateway).bindJoinHandler(); } catch {}
 }
 bootstrap();
