@@ -92,6 +92,7 @@ export class FantasyLeaguesService {
     const saved = await this.leagues.save(league);
     // Iniciar primer ciclo de mercado automáticamente (6 jugadores, 24h) si aún no existe
     try {
+      await this.market.cancelOpenOrdersForConflicts(Number(saved.id));
       await this.market.startNewCycle(Number(saved.id), 6);
     } catch (e) {
       // no bloquear creación de liga por fallo al iniciar ciclo
@@ -231,7 +232,7 @@ export class FantasyLeaguesService {
          LEFT JOIN bidders b ON b.market_order_id = mo.id
          LEFT JOIN pv ON pv.player_id = mo.player_id
          JOIN public.player p ON p.id = mo.player_id
-        WHERE mo.cycle_id = $1
+        WHERE mo.cycle_id = $1 AND mo.status = 'OPEN'
         ORDER BY mo.id ASC`,
       [cycle.id],
     );

@@ -108,6 +108,8 @@ export class FantasySchedulerService {
       const now = new Date();
       for (const lg of leagues) {
         // settleAndRotate cierra vencidas y abre nuevo si procede
+        // Primero cancela órdenes abiertas de jugadores ya en roster activo para evitar duplicidades
+        try { await this.market.cancelOpenOrdersForConflicts(lg.id); } catch {}
         await this.market.settleAndRotate(lg.id, now);
       }
     } catch (e) {

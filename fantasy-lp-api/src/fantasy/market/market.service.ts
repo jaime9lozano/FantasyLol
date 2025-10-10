@@ -384,6 +384,13 @@ export class MarketService {
       );
       const taken = new Set<number>(takenRows.map((r: any) => Number(r.pid)));
 
+      // Excluir también jugadores ya presentes en órdenes de mercado abiertas (cualquier ciclo)
+      const openOrderRows = await trx.query(
+        `SELECT player_id::bigint AS pid FROM ${T('market_order')} WHERE fantasy_league_id = $1 AND status = 'OPEN'`,
+        [fantasyLeagueId],
+      );
+      for (const r of openOrderRows) taken.add(Number(r.pid));
+
       const leagueRow = await trx.query(`SELECT source_league_id FROM ${T('fantasy_league')} WHERE id = $1`, [fantasyLeagueId]);
       const sourceLeagueId: number | null = leagueRow[0]?.source_league_id ?? null;
       const candidateRows = await trx.query(
@@ -470,5 +477,48 @@ export class MarketService {
       return this.startNewCycle(fantasyLeagueId, 6, now);
     }
     return { cycleId: cycle.id, playerIds: [] };
+  }
+
+  /** Cierra órdenes abiertas para jugadores que ya están en un roster activo de la liga. Libera reservas de todos los pujadores. */
+  async cancelOpenOrdersForConflicts(fantasyLeagueId: number) {
+    return this.ds.transaction(async (trx) => {
+      const orders: Array<{ id: number; player_id: number }> = await trx.query(
+        `SELECT mo.id::int AS id, mo.player_id::bigint AS player_id
+         FROM ${T('market_order')} mo
+         WHERE mo.fantasy_league_id = $1
+           AND mo.status = 'OPEN'
+           AND EXISTS (
+             SELECT 1 FROM ${T('fantasy_roster_slot')} fr
+             WHERE fr.fantasy_league_id = $1 AND fr.player_id = mo.player_id AND fr.active = true
+           )
+         FOR UPDATE SKIP LOCKED`,
+        [fantasyLeagueId],
+      );
+
+      for (const order of orders) {
+        // Libera reservas de todos los pujadores en esta orden
+        const bidders: Array<{ bidder_team_id: number; last_amount: bigint }> = await trx.query(
+          `SELECT DISTINCT b.bidder_team_id::int AS bidder_team_id,
+                  (SELECT lb.amount::bigint FROM ${T('market_bid')} lb
+                   WHERE lb.market_order_id = b.market_order_id AND lb.bidder_team_id = b.bidder_team_id
+                   ORDER BY lb.amount::bigint DESC, lb.created_at ASC, lb.id ASC LIMIT 1) AS last_amount
+           FROM ${T('market_bid')} b
+           WHERE b.market_order_id = $1`,
+          [order.id],
+        );
+        for (const ob of bidders) {
+          await trx.query(
+            `UPDATE ${T('fantasy_team')}
+             SET budget_reserved = budget_reserved - COALESCE($1::bigint, 0), updated_at = now()
+             WHERE id = $2`,
+            [(ob.last_amount ?? 0n).toString(), ob.bidder_team_id],
+          );
+        }
+        await trx.query(`UPDATE ${T('market_order')} SET status='CLOSED', closes_at=now(), updated_at=now() WHERE id=$1`, [order.id]);
+        try { this.gateway.emitOrderClosed(fantasyLeagueId, { orderId: order.id }); } catch {}
+      }
+
+      return { closed: orders.length };
+    });
   }
 }
