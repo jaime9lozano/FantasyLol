@@ -182,7 +182,8 @@ export class ValuationService {
   const valCfg = econ.valuation || {};
   const dampCfg = econ.dampening || {};
   const inactCfg = econ.inactivity || {};
-  const min = Number(valCfg.min ?? 250_000);
+  // Requisito: mínimo absoluto 1.000.000 (aunque econ_config diga menos)
+  const min = Math.max(1_000_000, Number(valCfg.min ?? 250_000));
   const max = Number(valCfg.hardCap ?? 200_000_000);
   const linearBase = Number(valCfg.linearBase ?? 250_000);
   const linearPerPoint = Number(valCfg.linearPerPoint ?? 180_000);

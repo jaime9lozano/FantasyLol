@@ -46,7 +46,7 @@ export class FantasyLeaguesService {
       rosterConfig: dto.rosterConfig ?? { slots: ['TOP', 'JNG', 'MID', 'ADC', 'SUP'], bench: 2 },
       economicConfig: (dto as any).economicConfig ?? {
         valuation: {
-          min: 250_000,
+          min: 1_000_000,
           hardCap: 200_000_000,
           linearBase: 250_000,
           linearPerPoint: 180_000,
@@ -225,7 +225,7 @@ export class FantasyLeaguesService {
               COALESCE(tb.top_amount, 0)::bigint AS highest_bid,
               COALESCE(b.bidders_count, 0)::int AS bidders_count,
               COALESCE(pv.v, 0)::bigint AS valuation,
-              CASE WHEN COALESCE(tb.top_amount,0) > 0 THEN (tb.top_amount + 1)::bigint ELSE GREATEST(mo.min_price::bigint, 1)::bigint END AS min_next_bid
+              CASE WHEN COALESCE(tb.top_amount,0) > 0 THEN (tb.top_amount + 1)::bigint ELSE GREATEST(mo.min_price::bigint, 1000000)::bigint END AS min_next_bid
          FROM ${T('market_order')} mo
          LEFT JOIN topb tb ON tb.market_order_id = mo.id
          LEFT JOIN bidders b ON b.market_order_id = mo.id

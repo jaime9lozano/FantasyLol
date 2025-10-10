@@ -424,7 +424,7 @@ export class MarketService {
       for (const pid of chosen) {
         await trx.query(
           `INSERT INTO ${T('fantasy_player_valuation')} (fantasy_league_id, player_id, current_value, last_change, calc_date)
-           VALUES ($1, $2, 0, 0, now()::date)
+           VALUES ($1, $2, 1000000, 0, now()::date)
            ON CONFLICT DO NOTHING`,
           [fantasyLeagueId, pid],
         );

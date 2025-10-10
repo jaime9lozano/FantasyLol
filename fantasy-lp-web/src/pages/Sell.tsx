@@ -46,7 +46,9 @@ export default function SellPage() {
         <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, border: '1px solid #eee', borderRadius: 10 }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 600 }}>{s.player?.name}</div>
-            <div style={{ fontSize: 12, color: '#666' }}>{s.slot} · {s.starter ? 'Titular' : 'Banquillo'}</div>
+            <div style={{ fontSize: 12, color: '#666' }}>
+              {s.slot} · {s.starter ? 'Titular' : 'Banquillo'} · Valor: {new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(Number(s.value || 0))}
+            </div>
           </div>
           <button onClick={() => sell(Number(s.player?.id))}>Vender</button>
         </div>
