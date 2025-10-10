@@ -60,10 +60,10 @@ export default function LeagueSelectorPage() {
               e.preventDefault();
               setError(null);
               try {
-                await http.post('/fantasy/leagues/join', { inviteCode, teamName });
-                // tras unirse, refrescar memberships
-                const { data } = await http.get('/auth/memberships');
-                setItems(data);
+                const { data: joined } = await http.post('/fantasy/leagues/join', { inviteCode, teamName });
+                // Auto-select: usar la liga recién unida y navegar a Home
+                await selectLeague(Number(joined.leagueId));
+                nav('/home', { replace: true });
               } catch (e: any) {
                 setError(e?.response?.data?.message || 'Error al unirse a la liga');
               }
@@ -86,8 +86,8 @@ export default function LeagueSelectorPage() {
                 const { data: league } = await http.post('/fantasy/leagues', { name: newLeagueName, sourceLeagueCode });
                 // Unirse a la liga como manager actual (el backend toma el userId del token)
                 await http.post('/fantasy/leagues/join', { inviteCode: league.inviteCode, teamName });
-                const { data } = await http.get('/auth/memberships');
-                setItems(data);
+                await selectLeague(Number(league.id));
+                nav('/home', { replace: true });
               } catch (e: any) {
                 setError(e?.response?.data?.message || 'Error al crear/unirse a liga');
               } finally {

@@ -17,6 +17,7 @@ export default function HomePage() {
   const access = localStorage.getItem('access');
   const payload = useMemo(() => decodeJwt(access), [access]);
   const leagueId = payload?.leagueId; const teamId = payload?.teamId;
+  const leagueName = useMemo(() => user?.memberships?.find(m => m.leagueId === leagueId)?.leagueName ?? `Liga #${leagueId}`, [user, leagueId]);
 
   useEffect(() => {
     if (!leagueId || !teamId) return;
@@ -28,22 +29,56 @@ export default function HomePage() {
   if (!leagueId || !teamId) return <div style={{ padding: 16 }}>No hay contexto de liga. Vuelve al selector.</div>;
 
   return (
-    <div style={{ padding: 16 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1>Home Liga {leagueId}</h1>
+    <div style={{ padding: 16, display: 'grid', gap: 16 }}>
+      {/* Header */}
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <div style={{ fontSize: 12, color: '#666' }}>Mi liga</div>
+          <h1 style={{ margin: 0 }}>{leagueName}</h1>
+        </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{ opacity: 0.8 }}>Hola, {user?.displayName || 'manager'}</span>
           <button onClick={() => { logout(); nav('/login', { replace: true }); }}>Salir</button>
         </div>
-      </div>
+      </header>
+
       {error && <div style={{ color: 'crimson' }}>{error}</div>}
+
+      {/* Ranking tarjetas */}
       <section>
-        <h3>Ranking Top</h3>
-        <pre style={{ background: '#f5f5f5', padding: 8 }}>{JSON.stringify(summary?.ranking ?? [], null, 2)}</pre>
+        <h3 style={{ marginBottom: 8 }}>Clasificación</h3>
+        <div style={{ display: 'grid', gap: 8 }}>
+          {(summary?.ranking ?? []).map((row: any, idx: number) => (
+            <div key={row.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, border: '1px solid #eee', borderRadius: 10 }}>
+              <div style={{ width: 28, height: 28, borderRadius: 14, background: '#222', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{idx + 1}</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600 }}>{row.name}</div>
+                <div style={{ fontSize: 12, color: '#666' }}>{row.display_name}</div>
+              </div>
+              <div style={{ fontWeight: 600 }}>{Math.round(row.points)} pts</div>
+            </div>
+          ))}
+        </div>
       </section>
+
+      {/* Tu equipo compacto */}
       <section>
-        <h3>Tu equipo #{teamId}</h3>
-        <pre style={{ background: '#f5f5f5', padding: 8 }}>{JSON.stringify(compact ?? {}, null, 2)}</pre>
+        <h3 style={{ marginBottom: 8 }}>Tu equipo</h3>
+        <div style={{ display: 'grid', gap: 8 }}>
+          {(compact ?? []).map((s: any) => (
+            <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, border: '1px solid #eee', borderRadius: 10 }}>
+              <div style={{ width: 54, textAlign: 'center' }}>
+                <div style={{ fontSize: 12, color: '#666' }}>{s.slot}</div>
+                {s.starter ? <span style={{ fontSize: 10, color: '#0a7' }}>Titular</span> : <span style={{ fontSize: 10, color: '#777' }}>Banquillo</span>}
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600 }}>{s.player?.name}</div>
+                <div style={{ fontSize: 12, color: '#666' }}>{s.lockedUntil ? 'Bloqueado' : 'Disponible'}</div>
+              </div>
+              <div style={{ fontWeight: 600 }}>{new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(Number(s.value || 0))}</div>
+            </div>
+          ))}
+        </div>
       </section>
     </div>
   );
