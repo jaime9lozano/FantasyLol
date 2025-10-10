@@ -6,9 +6,10 @@ import { FantasyLeaguesService } from './fantasy-leagues.service';
 import { FantasyLeague } from './fantasy-league.entity';
 import { FantasyManager } from './fantasy-manager.entity';
 import { FantasyTeam } from '../teams/fantasy-team.entity';
+import { FantasyMarketModule } from '../market/fantasy-market.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([FantasyLeague, FantasyManager, FantasyTeam])],
+  imports: [TypeOrmModule.forFeature([FantasyLeague, FantasyManager, FantasyTeam]), FantasyMarketModule],
   controllers: [FantasyLeaguesController],
   providers: [FantasyLeaguesService],
   exports: [TypeOrmModule, FantasyLeaguesService],

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { http } from '../lib/http';
+import BottomNav from '../components/BottomNav';
 
 function decodeJwt(token: string | null): any | null {
   if (!token) return null;
@@ -29,7 +30,7 @@ export default function HomePage() {
   if (!leagueId || !teamId) return <div style={{ padding: 16 }}>No hay contexto de liga. Vuelve al selector.</div>;
 
   return (
-    <div style={{ padding: 16, display: 'grid', gap: 16 }}>
+    <div style={{ padding: '16px 16px 64px', display: 'grid', gap: 16 }}>
       {/* Header */}
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
@@ -80,6 +81,8 @@ export default function HomePage() {
           ))}
         </div>
       </section>
+      <div style={{ height: 56 }} />
+      <BottomNav />
     </div>
   );
 }

@@ -4,6 +4,8 @@ import LoginPage from './pages/Login';
 import RegisterPage from './pages/Register';
 import LeagueSelectorPage from './pages/LeagueSelector';
 import HomePage from './pages/Home';
+import MarketPage from './pages/Market';
+import SellPage from './pages/Sell';
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const { access } = useAuth();
@@ -20,6 +22,8 @@ export default function App() {
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/select-league" element={<RequireAuth><LeagueSelectorPage /></RequireAuth>} />
           <Route path="/home" element={<RequireAuth><HomePage /></RequireAuth>} />
+          <Route path="/market" element={<RequireAuth><MarketPage /></RequireAuth>} />
+          <Route path="/sell" element={<RequireAuth><SellPage /></RequireAuth>} />
           <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
       </BrowserRouter>

@@ -97,6 +97,25 @@ export class FantasySchedulerService {
   }
 
   /**
+   * 2.b) Rotación automática de ciclo: cada 5 minutos
+   *  - Para cada liga, si no hay ciclo o el último ciclo ya está cerrado (closes_at <= now), rota: liquida y abre nuevo.
+   *  - No expone endpoint público; esto sustituye a los botones de ciclo en producción.
+   */
+  @Cron('*/5 * * * *')
+  async autoRotateCycles() {
+    try {
+      const leagues: Array<{ id: number }> = await this.ds.query(`SELECT id FROM ${T('fantasy_league')}`);
+      const now = new Date();
+      for (const lg of leagues) {
+        // settleAndRotate cierra vencidas y abre nuevo si procede
+        await this.market.settleAndRotate(lg.id, now);
+      }
+    } catch (e) {
+      this.logger.error('Error en autoRotateCycles()', e as any);
+    }
+  }
+
+  /**
    * 3) Revaluación nocturna por liga.
    *  - Comprueba todas las ligas cada 5 minutos; si es ~03:00 local y no se recalculó hoy, ejecuta recalcAllValues.
    *  - Mantiene fantasy en schema actual (T()).

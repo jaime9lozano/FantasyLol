@@ -10,6 +10,7 @@ import { JoinLeagueDto } from './dto/join-league.dto';
 import { UpdateLeagueDto } from './dto/update-league.dto';
 import { T } from '../../database/schema.util';
 import { Tournament } from 'src/entities/tournament.entity';
+import { MarketService } from '../market/market.service';
 
 function genInviteCode(len = 6) {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -25,6 +26,7 @@ export class FantasyLeaguesService {
     @InjectRepository(FantasyManager) private managers: Repository<FantasyManager>,
     @InjectRepository(FantasyTeam) private teams: Repository<FantasyTeam>,
     @InjectDataSource() private ds: DataSource,
+    private readonly market: MarketService,
   ) {}
 
   async createLeague(adminManagerId: number, dto: CreateFantasyLeagueDto) {
@@ -87,7 +89,14 @@ export class FantasyLeaguesService {
       }
     }
     // Nuevo modelo: no fijamos source_tournament_id (abarca todos los torneos de esa liga)
-    return this.leagues.save(league);
+    const saved = await this.leagues.save(league);
+    // Iniciar primer ciclo de mercado automáticamente (6 jugadores, 24h) si aún no existe
+    try {
+      await this.market.startNewCycle(Number(saved.id), 6);
+    } catch (e) {
+      // no bloquear creación de liga por fallo al iniciar ciclo
+    }
+    return saved;
   }
 
   async joinLeague(fantasyManagerId: number, dto: JoinLeagueDto) {
@@ -201,13 +210,19 @@ export class FantasyLeaguesService {
                 MAX(mb.amount::bigint) AS top_amount
            FROM ${T('market_bid')} mb
           GROUP BY mb.market_order_id
+       ), bidders AS (
+         SELECT market_order_id, COUNT(DISTINCT bidder_team_id)::int AS bidders_count
+           FROM ${T('market_bid')}
+          GROUP BY market_order_id
        )
        SELECT mo.id AS order_id,
               mo.player_id::bigint AS player_id,
               COALESCE(tb.top_amount, 0)::bigint AS highest_bid,
+              COALESCE(b.bidders_count, 0)::int AS bidders_count,
               CASE WHEN COALESCE(tb.top_amount,0) > 0 THEN (tb.top_amount + 1)::bigint ELSE GREATEST(mo.min_price::bigint, 1)::bigint END AS min_next_bid
          FROM ${T('market_order')} mo
          LEFT JOIN topb tb ON tb.market_order_id = mo.id
+         LEFT JOIN bidders b ON b.market_order_id = mo.id
         WHERE mo.cycle_id = $1
         ORDER BY mo.id ASC`,
       [cycle.id],

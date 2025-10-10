@@ -116,7 +116,14 @@ export class MarketService {
       );
       const top: bigint = topBidRows[0]?.amount ?? 0n;
       const minPrice: bigint = order.min_price ?? 0n;
-      const minRequired = Number(top > minPrice ? top + 1n : minPrice > 0n ? minPrice : 1n);
+      // Regla adicional: no permitir pujar por debajo de la valoración actual del jugador
+      const [valRow] = await trx.query(
+        `SELECT current_value::bigint AS v FROM ${T('fantasy_player_valuation')} WHERE fantasy_league_id=$1 AND player_id=$2`,
+        [leagueId, order.player_id],
+      );
+      const valuationMin: bigint = valRow?.v ?? 0n;
+      const computedMin = top > minPrice ? top + 1n : (minPrice > 0n ? minPrice : 1n);
+      const minRequired = Number(computedMin > valuationMin ? computedMin : valuationMin > 0n ? valuationMin : 1n);
       if (dto.amount < minRequired) throw new BadRequestException(`Puja mínima: ${minRequired}`);
 
       const available = BigInt(team.br) - BigInt(team.bz);
