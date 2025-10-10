@@ -1,6 +1,6 @@
 // src/fantasy/leagues/fantasy-leagues.service.ts
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, Repository, EntityManager } from 'typeorm';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
 import { FantasyLeague } from './fantasy-league.entity';
 import { FantasyManager } from './fantasy-manager.entity';
@@ -42,6 +42,18 @@ export class FantasyLeaguesService {
       timezone: dto.timezone ?? 'Europe/Madrid',
       scoringConfig: dto.scoringConfig ?? { kill: 3, assist: 2, death: -1, cs10: 0.5, win: 2 },
       rosterConfig: dto.rosterConfig ?? { slots: ['TOP', 'JNG', 'MID', 'ADC', 'SUP'], bench: 2 },
+      economicConfig: (dto as any).economicConfig ?? {
+        valuation: {
+          min: 250_000,
+          hardCap: 200_000_000,
+          linearBase: 250_000,
+          linearPerPoint: 180_000,
+          quadraticThreshold: 20,
+          quadraticFactor: 50_000,
+        },
+        dampening: { baseDivisor: 1, perPeriod: 0.1, maxFactor: 4 },
+        inactivity: { periodsWithoutGameForDecay: 2, decayPercentPerExtraPeriod: 0.10, maxDecayPercent: 0.50 },
+      },
       sourceLeagueCode: dto.sourceLeagueCode?.toUpperCase() ?? null,
       sourceLeagueId: (dto as any).sourceLeagueId ?? null,
     });
@@ -50,22 +62,40 @@ export class FantasyLeaguesService {
       const [core] = await this.ds.query(`SELECT id, code FROM public.league WHERE id = $1`, [league.sourceLeagueId]);
       if (core) league.sourceLeagueCode = (core.code || league.sourceLeagueCode || '').toUpperCase() || null;
     } else if (league.sourceLeagueCode) {
-      const [core] = await this.ds.query(`SELECT id, code FROM public.league WHERE code ILIKE $1 LIMIT 1`, [league.sourceLeagueCode]);
+      const code = league.sourceLeagueCode.toUpperCase();
+      const isBase3 = /^[A-Z]{3}$/.test(code); // LCK/LEC/LPL
+      let core: any | undefined;
+      if (isBase3) {
+        // Match exacto sólo para evitar LCK CL cuando piden LCK
+        [core] = await this.ds.query(
+          `SELECT id, code FROM public.league WHERE code = $1 LIMIT 1`,
+          [code],
+        );
+      } else {
+        // Temporada: permitir prefijo (LCK21, LPL2020, etc.)
+        [core] = await this.ds.query(
+          `SELECT id, code FROM public.league WHERE code ILIKE $1 LIMIT 1`,
+          [`${code}%`],
+        );
+      }
       if (core?.id) {
         league.sourceLeagueId = Number(core.id);
-        league.sourceLeagueCode = (core.code || league.sourceLeagueCode).toUpperCase();
+        league.sourceLeagueCode = (core.code || code).toUpperCase();
+      } else {
+        // Intento 2: usar torneos para derivar el code/id cuando el code incluye año
+        await this.assignActiveTournament(league);
       }
     }
     // Nuevo modelo: no fijamos source_tournament_id (abarca todos los torneos de esa liga)
     return this.leagues.save(league);
   }
 
-  async joinLeague(dto: JoinLeagueDto) {
+  async joinLeague(fantasyManagerId: number, dto: JoinLeagueDto) {
     return this.ds.transaction(async (trx) => {
       const league = await trx.findOne(FantasyLeague, { where: { inviteCode: dto.inviteCode } });
       if (!league) throw new BadRequestException('Invite code inválido');
 
-      const mgr = await trx.findOne(FantasyManager, { where: { id: dto.fantasyManagerId } });
+      const mgr = await trx.findOne(FantasyManager, { where: { id: fantasyManagerId } });
       if (!mgr) throw new BadRequestException('Manager inválido');
 
       const exists = await trx.findOne(FantasyTeam, {
@@ -85,6 +115,13 @@ export class FantasyLeaguesService {
         pointsTotal: '0',
       });
       await trx.save(team);
+      // Auto-asignar plantilla inicial: 5 titulares + 1 bench (solo jugadores actuales de la liga base)
+      try {
+        await this.autoAssignInitialRoster(trx, Number(league.id), Number(team.id));
+      } catch (e) {
+        // Log suave sin romper el flujo de unión a liga
+        // console.warn('No se pudo autoasignar plantilla inicial:', (e as Error).message);
+      }
       return { leagueId: league.id, teamId: team.id, budgetRemaining: team.budgetRemaining };
     });
   }
@@ -367,5 +404,124 @@ export class FantasyLeaguesService {
       .join('');
     if (initials.length >= 2 && initials.length <= 5) return initials.toUpperCase();
     return null;
+  }
+
+  /** Asigna 6 jugadores al equipo: TOP/JNG/MID/ADC/SUP titulares + 1 BENCH. */
+  private async autoAssignInitialRoster(qr: EntityManager, leagueId: number, teamId: number): Promise<void> {
+      const [lg] = await qr.query(`SELECT source_league_id FROM ${T('fantasy_league')} WHERE id = $1`, [leagueId]);
+      const sourceLeagueId: number | null = lg?.source_league_id ? Number(lg.source_league_id) : null;
+      // Endurecer: si no hay liga core, no auto-asignar
+      if (!sourceLeagueId) {
+        // console.info(`[Fantasy] Liga ${leagueId} sin sourceLeagueId: no se auto-asigna roster`);
+        return;
+      }
+
+      const taken = await qr.query(
+        `SELECT player_id::bigint AS player_id FROM ${T('fantasy_roster_slot')} WHERE fantasy_league_id = $1 AND active = true`,
+        [leagueId],
+      );
+      const takenIds = new Set<number>(taken.map((r: any) => Number(r.player_id)));
+
+      type CoreRole = 'TOP' | 'JNG' | 'MID' | 'ADC' | 'SUP';
+
+      async function fetchCandidatesByRole(target: CoreRole): Promise<number[]> {
+        const rows = await qr.query(
+          `
+          WITH roles AS (
+            SELECT p.id::bigint AS id,
+                   UPPER(
+                     CASE r.code
+                       WHEN 'JUNGLE'  THEN 'JNG'
+                       WHEN 'SUPPORT' THEN 'SUP'
+                       WHEN 'BOT'     THEN 'ADC'
+                       WHEN 'BOTTOM'  THEN 'ADC'
+                       ELSE COALESCE(r.code, 'FLEX')
+                     END
+                   ) AS role_norm
+            FROM public.player p
+            JOIN public.team_player_membership tpm ON tpm.player_id = p.id AND tpm.is_current = true
+            JOIN public.team t ON t.id = tpm.team_id AND t.league_id = $2
+            LEFT JOIN public.role r ON r.id = tpm.main_role_id
+          ),
+          agg AS (
+            SELECT id, role_norm, COUNT(*) AS c,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY id
+                     ORDER BY COUNT(*) DESC,
+                       CASE role_norm
+                         WHEN 'TOP' THEN 1
+                         WHEN 'JNG' THEN 2
+                         WHEN 'MID' THEN 3
+                         WHEN 'ADC' THEN 4
+                         WHEN 'SUP' THEN 5
+                         ELSE 6
+                       END
+                   ) AS rn
+            FROM roles
+            GROUP BY id, role_norm
+          )
+          SELECT id FROM agg WHERE rn = 1 AND role_norm = $1 ORDER BY id ASC LIMIT 1000
+          `,
+          [target, sourceLeagueId],
+        );
+        return rows.map((r: any) => Number(r.id));
+      }
+
+      async function pickByRole(target: CoreRole): Promise<number | null> {
+        const ids = await fetchCandidatesByRole(target);
+        for (const id of ids) {
+          if (!takenIds.has(id)) { takenIds.add(id); return id; }
+        }
+        return null;
+      }
+
+      async function pickAny(): Promise<number | null> {
+        const rows = await qr.query(
+          `SELECT p.id::bigint AS id
+           FROM public.player p
+           JOIN public.team_player_membership tpm ON tpm.player_id = p.id AND tpm.is_current = true
+           JOIN public.team t ON t.id = tpm.team_id AND t.league_id = $1
+           ORDER BY p.id ASC
+           LIMIT 2000`,
+          [sourceLeagueId],
+        );
+        for (const r of rows) {
+          const id = Number(r.id);
+          if (!takenIds.has(id)) { takenIds.add(id); return id; }
+        }
+        return null;
+      }
+
+      const desired: CoreRole[] = ['TOP', 'JNG', 'MID', 'ADC', 'SUP'];
+      const picks: { player_id: number; slot: string; starter: boolean }[] = [];
+      for (const slot of desired) {
+        const picked = (await pickByRole(slot)) ?? (await pickAny());
+        if (!picked) throw new Error(`No hay jugadores suficientes para ${slot}`);
+        picks.push({ player_id: picked, slot, starter: true });
+      }
+      const bench = await pickAny();
+      if (!bench) throw new Error('No hay jugador disponible para BENCH');
+      picks.push({ player_id: bench, slot: 'BENCH', starter: false });
+
+      for (const p of picks) {
+        await qr.query(
+          `INSERT INTO ${T('fantasy_roster_slot')}
+             (fantasy_league_id, fantasy_team_id, player_id, slot, starter, active,
+              acquisition_price, clause_value, valid_from, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, true,
+                   (1000000)::bigint, (1500000)::bigint, now(), now(), now())`,
+          [leagueId, teamId, p.player_id, p.slot, p.starter],
+        );
+        await qr.query(
+          `INSERT INTO ${T('fantasy_player_valuation')}
+             (fantasy_league_id, player_id, current_value, last_change, calc_date)
+           VALUES ($1, $2, (1000000)::bigint, 0, now()::date)
+           ON CONFLICT (fantasy_league_id, player_id) DO UPDATE
+             SET current_value = EXCLUDED.current_value,
+                 updated_at    = now(),
+                 calc_date     = EXCLUDED.calc_date`,
+          [leagueId, p.player_id],
+        );
+      }
   }
 }

@@ -118,6 +118,7 @@ export class AuthService {
 
   /** Devuelve las ligas/equipos a los que pertenece este manager. */
   async memberships(userId: number) {
+    if (!userId || isNaN(Number(userId))) return [];
     const rows = await this.teams.createQueryBuilder('t')
       .innerJoinAndSelect('t.fantasyLeague', 'l')
       .innerJoin('t.fantasyManager', 'm')

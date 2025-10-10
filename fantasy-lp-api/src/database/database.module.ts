@@ -22,6 +22,7 @@ import { FantasyRosterSlot } from 'src/fantasy/teams/fantasy-roster-slot.entity'
 import { FantasyTeam } from 'src/fantasy/teams/fantasy-team.entity';
 import { FantasyPlayerValuation } from 'src/fantasy/valuation/fantasy-player-valuation.entity';
 import { MarketCycle } from 'src/fantasy/market/market-cycle.entity';
+import { DatabaseBootstrapService } from './bootstrap.service';
 
 
 @Module({
@@ -56,5 +57,6 @@ import { MarketCycle } from 'src/fantasy/market/market-cycle.entity';
       },
     }),
   ],
+  providers: [DatabaseBootstrapService],
 })
 export class DatabaseModule {}

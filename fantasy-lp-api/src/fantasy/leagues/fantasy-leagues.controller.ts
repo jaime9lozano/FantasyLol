@@ -16,18 +16,17 @@ import { Roles } from '../../auth/roles.decorator';
 export class FantasyLeaguesController {
   constructor(private readonly svc: FantasyLeaguesService) {}
 
-  @Public()
   @Post()
-  createLeague(@Body() dto: CreateFantasyLeagueDto) {
-    // Por simplicidad: admin_manager_id = 1; en tu auth real toma del token/req.user
-    return this.svc.createLeague(1, dto);
+  createLeague(@Body() dto: CreateFantasyLeagueDto, @User() user?: AuthUser) {
+    if (!user?.userId) throw new Error('No autenticado');
+    return this.svc.createLeague(Number(user.userId), dto);
   }
 
-  @Public()
   @Post('join')
   @HttpCode(HttpStatus.CREATED)
-  join(@Body() dto: JoinLeagueDto) {
-    return this.svc.joinLeague(dto);
+  join(@Body() dto: JoinLeagueDto, @User() user?: AuthUser) {
+    if (!user?.userId) throw new Error('No autenticado');
+    return this.svc.joinLeague(Number(user.userId), dto);
   }
 
   @Get(':id/ranking')

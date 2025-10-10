@@ -54,6 +54,12 @@ export async function resetFantasyDb(ds: DataSource): Promise<void> {
       BEGIN
         ALTER TABLE ${T('market_order')} ALTER COLUMN owner_team_id DROP NOT NULL;
       EXCEPTION WHEN others THEN NULL; END;
+      -- Garantía de ownership único por liga: un jugador activo no puede repetir equipo en misma liga
+      BEGIN
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_roster_unique_player_active
+        ON ${T('fantasy_roster_slot')}(fantasy_league_id, player_id)
+        WHERE active = true;
+      EXCEPTION WHEN others THEN NULL; END;
     END $$;`);
   // Ampliar CHECK de transfer_transaction.type si existe para permitir SELL_TO_LEAGUE
   await qr.query(`DO $$ BEGIN
