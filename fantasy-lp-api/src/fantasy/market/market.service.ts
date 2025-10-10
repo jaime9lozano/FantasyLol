@@ -440,7 +440,17 @@ export class MarketService {
       for (const pid of chosen) {
         await trx.query(
           `INSERT INTO ${T('market_order')} (fantasy_league_id, player_id, owner_team_id, type, status, min_price, opens_at, closes_at, cycle_id)
-           VALUES ($1, $2, NULL, 'AUCTION', 'OPEN', 0, $3, $4, $5)`,
+           VALUES (
+             $1,
+             $2,
+             NULL,
+             'AUCTION',
+             'OPEN',
+             COALESCE((SELECT current_value::bigint FROM ${T('fantasy_player_valuation')} WHERE fantasy_league_id = $1 AND player_id = $2), 0),
+             $3,
+             $4,
+             $5
+           )`,
           [fantasyLeagueId, pid, now, cycle.closesAt, saved.id],
         );
       }

@@ -45,6 +45,23 @@ export default function HomePage() {
 
       {error && <div style={{ color: 'crimson' }}>{error}</div>}
 
+      {/* Info rápida de tu equipo */}
+      {summary?.yourTeam && (
+        <section>
+          <h3 style={{ marginBottom: 8 }}>Tu presupuesto</h3>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', padding: 12, border: '1px solid #eee', borderRadius: 10 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600 }}>{summary.yourTeam.name}</div>
+              <div style={{ fontSize: 12, color: '#666' }}>Posición: {summary.yourTeam.position} · Puntos: {Math.round(summary.yourTeam.points)}</div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div>Disponible: {new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(Number(summary.yourTeam.budgetRemaining || 0))}</div>
+              <div style={{ fontSize: 12, color: '#666' }}>Reservado: {new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(Number(summary.yourTeam.budgetReserved || 0))}</div>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Ranking tarjetas */}
       <section>
         <h3 style={{ marginBottom: 8 }}>Clasificación</h3>

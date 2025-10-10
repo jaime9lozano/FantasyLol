@@ -1,6 +1,4 @@
-import axios from 'axios';
-
-const http = axios.create({ baseURL: '/api' });
+import { http } from './lib/http';
 
 export async function apiLogin(email: string, password: string) {
   const { data } = await http.post('/auth/login', { email, password });

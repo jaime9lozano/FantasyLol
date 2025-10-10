@@ -23,7 +23,12 @@ export default function SellPage() {
 
   const sell = async (playerId: number) => {
     if (!leagueId || !teamId) return;
-    if (!window.confirm('¿Seguro que quieres vender este jugador a la liga?')) return;
+    try {
+      const { data: info } = await http.get(`/fantasy/teams/${teamId}/player/${playerId}/stats`, { params: { leagueId } });
+      const price = Number(info?.currentValue || 0);
+      const ok = window.confirm(`Vas a vender por ${new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(price)}. ¿Confirmas?`);
+      if (!ok) return;
+    } catch {}
     try {
       await http.post('/fantasy/market/sell-to-league', { fantasyLeagueId: leagueId, teamId, playerId });
       const { data } = await http.get(`/fantasy/teams/${teamId}/roster/compact`);
@@ -37,7 +42,7 @@ export default function SellPage() {
     <div style={{ padding: '16px 16px 64px', display: 'grid', gap: 8 }}>
       <h2 style={{ margin: 0 }}>Vender a la liga</h2>
       {error && <div style={{ color: 'crimson' }}>{error}</div>}
-      {roster.filter(s => s.active).map((s: any) => (
+      {roster.map((s: any) => (
         <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, border: '1px solid #eee', borderRadius: 10 }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 600 }}>{s.player?.name}</div>

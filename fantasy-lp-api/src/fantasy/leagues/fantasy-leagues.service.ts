@@ -214,15 +214,23 @@ export class FantasyLeaguesService {
          SELECT market_order_id, COUNT(DISTINCT bidder_team_id)::int AS bidders_count
            FROM ${T('market_bid')}
           GROUP BY market_order_id
+       ), pv AS (
+         SELECT player_id, current_value::bigint AS v
+           FROM ${T('fantasy_player_valuation')}
+          WHERE fantasy_league_id = (SELECT fantasy_league_id FROM ${T('market_cycle')} WHERE id = $1)
        )
        SELECT mo.id AS order_id,
               mo.player_id::bigint AS player_id,
+              p.display_name AS player_name,
               COALESCE(tb.top_amount, 0)::bigint AS highest_bid,
               COALESCE(b.bidders_count, 0)::int AS bidders_count,
+              COALESCE(pv.v, 0)::bigint AS valuation,
               CASE WHEN COALESCE(tb.top_amount,0) > 0 THEN (tb.top_amount + 1)::bigint ELSE GREATEST(mo.min_price::bigint, 1)::bigint END AS min_next_bid
          FROM ${T('market_order')} mo
          LEFT JOIN topb tb ON tb.market_order_id = mo.id
          LEFT JOIN bidders b ON b.market_order_id = mo.id
+         LEFT JOIN pv ON pv.player_id = mo.player_id
+         JOIN public.player p ON p.id = mo.player_id
         WHERE mo.cycle_id = $1
         ORDER BY mo.id ASC`,
       [cycle.id],
@@ -475,7 +483,7 @@ export class FantasyLeaguesService {
             FROM roles
             GROUP BY id, role_norm
           )
-          SELECT id FROM agg WHERE rn = 1 AND role_norm = $1 ORDER BY id ASC LIMIT 1000
+          SELECT id FROM agg WHERE rn = 1 AND role_norm = $1 ORDER BY random() LIMIT 1000
           `,
           [target, sourceLeagueId],
         );
@@ -496,7 +504,7 @@ export class FantasyLeaguesService {
            FROM public.player p
            JOIN public.team_player_membership tpm ON tpm.player_id = p.id AND tpm.is_current = true
            JOIN public.team t ON t.id = tpm.team_id AND t.league_id = $1
-           ORDER BY p.id ASC
+           ORDER BY random()
            LIMIT 2000`,
           [sourceLeagueId],
         );

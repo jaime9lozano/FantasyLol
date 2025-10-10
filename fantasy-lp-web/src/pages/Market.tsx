@@ -68,16 +68,19 @@ export default function MarketPage() {
 
       <section style={{ display: 'grid', gap: 8 }}>
         {(data?.orders ?? []).map((o: any) => (
-          <div key={o.order_id} style={{ display: 'flex', gap: 12, alignItems: 'center', padding: 12, border: '1px solid #eee', borderRadius: 10 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600 }}>Jugador #{o.player_id}</div>
+          <div key={o.order_id} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'center', padding: 12, border: '1px solid #eee', borderRadius: 12, background: '#fff' }}>
+            <div>
+              <div style={{ fontWeight: 700 }}>{o.player_name}</div>
               <div style={{ fontSize: 12, color: '#666' }}>
-                Pujas de usuarios: {o.bidders_count}
+                Valor: {new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(Number(o.valuation || 0))}
+                {' · '}Pujas de usuarios: {o.bidders_count}
               </div>
             </div>
-            <button disabled={placing === o.order_id} onClick={() => onBid(o.order_id, Number(o.min_next_bid))}>
-              {placing === o.order_id ? 'Pujando…' : `Pujar (mín ${new Intl.NumberFormat('es-ES').format(Number(o.min_next_bid))})`}
-            </button>
+            <div>
+              <button disabled={placing === o.order_id} onClick={() => onBid(o.order_id, Number(o.min_next_bid))}>
+                {placing === o.order_id ? 'Pujando…' : `Pujar (mín ${new Intl.NumberFormat('es-ES').format(Number(o.min_next_bid))})`}
+              </button>
+            </div>
           </div>
         ))}
         {data?.orders?.length === 0 && <div>No hay órdenes activas. Espera a la siguiente rotación automática.</div>}
