@@ -27,7 +27,7 @@ export default function MarketPage() {
   }, [leagueId]);
 
   const onBid = async (orderId: number, minNext: number) => {
-    const amountStr = window.prompt(`Cantidad a pujar (mínimo ${new Intl.NumberFormat('es-ES').format(minNext)}):`, String(minNext));
+    const amountStr = window.prompt(`Cantidad a pujar:`, String("Valor"));
     if (!amountStr) return;
     const amount = Number(amountStr);
     if (!Number.isFinite(amount) || amount < minNext) {
@@ -78,7 +78,7 @@ export default function MarketPage() {
             </div>
             <div>
               <button disabled={placing === o.order_id} onClick={() => onBid(o.order_id, Number(o.min_next_bid))}>
-                {placing === o.order_id ? 'Pujando…' : `Pujar (mín ${new Intl.NumberFormat('es-ES').format(Number(o.min_next_bid))})`}
+                {placing === o.order_id ? 'Pujando…' : `Pujar ${new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(Number(o.valuation || 0))}`}
               </button>
             </div>
           </div>
