@@ -76,18 +76,25 @@ export class ValuationService {
         throw new BadRequestException('Plantilla completa: máximo 6 jugadores. Vende antes de comprar.');
       }
 
-      // Valor base (fantasy valuation)
-      const vals = await trx.query(
-        `
-        SELECT current_value::bigint AS current_value
-        FROM ${T('fantasy_player_valuation')}
-        WHERE fantasy_league_id = $1 AND player_id = $2
-        `,
-        [dto.fantasyLeagueId, dto.playerId],
-      );
-      const base = BigInt(vals[0]?.current_value ?? slot.clause_value ?? 0n);
-      const mult = Number(league.clause_multiplier ?? 1.5);
-      const clause = (base * BigInt(Math.round(mult * 100))) / 100n;
+      // Determinar cláusula a pagar: si el slot tiene clause_value (>0), usarlo tal cual.
+      // Si no, calcular a partir de valuation actual y multiplicador de la liga.
+      let clause: bigint;
+      const existingClause = slot.clause_value != null ? BigInt(slot.clause_value) : 0n;
+      if (existingClause > 0n) {
+        clause = existingClause;
+      } else {
+        const vals = await trx.query(
+          `
+          SELECT current_value::bigint AS current_value
+          FROM ${T('fantasy_player_valuation')}
+          WHERE fantasy_league_id = $1 AND player_id = $2
+          `,
+          [dto.fantasyLeagueId, dto.playerId],
+        );
+        const currentValue = vals[0]?.current_value != null ? BigInt(vals[0].current_value) : 0n;
+        const mult = Number(league.clause_multiplier ?? 1.5);
+        clause = (currentValue * BigInt(Math.round(mult * 100))) / 100n;
+      }
 
       // Saldo
       const available = BigInt(buyer.br) - BigInt(buyer.bz);
@@ -98,6 +105,29 @@ export class ValuationService {
       if (newBal < 0n) throw new BadRequestException('Saldo insuficiente');
       await trx.query(`UPDATE ${T('fantasy_team')} SET budget_remaining = $3::bigint, updated_at = now() WHERE id = $1 AND fantasy_league_id = $2`, [buyer.id, dto.fantasyLeagueId, newBal.toString()]);
       await trx.query(`INSERT INTO ${T('fantasy_budget_ledger')} (fantasy_league_id, fantasy_team_id, type, delta, balance_after, ref_id, metadata, created_at) VALUES ($1,$2,'CLAUSE_PAYMENT',-$3::bigint,$4::bigint,NULL,$5::jsonb, now())`, [dto.fantasyLeagueId, buyer.id, clause.toString(), newBal.toString(), JSON.stringify({ playerId: dto.playerId })]);
+
+      // Acreditar al vendedor (ingreso por cláusula)
+      const sellers = await trx.query(
+        `SELECT id, budget_remaining::bigint AS br
+         FROM ${T('fantasy_team')}
+         WHERE id = $1 AND fantasy_league_id = $2
+         FOR UPDATE`,
+        [Number(slot.fantasy_team_id), dto.fantasyLeagueId],
+      );
+      if (sellers.length) {
+        const seller = sellers[0];
+        const newSellerBal = (BigInt(seller.br) + clause).toString();
+        await trx.query(
+          `UPDATE ${T('fantasy_team')} SET budget_remaining = $3::bigint, updated_at = now()
+           WHERE id = $1 AND fantasy_league_id = $2`,
+          [seller.id, dto.fantasyLeagueId, newSellerBal],
+        );
+        await trx.query(
+          `INSERT INTO ${T('fantasy_budget_ledger')} (fantasy_league_id, fantasy_team_id, type, delta, balance_after, ref_id, metadata, created_at)
+           VALUES ($1,$2,'CLAUSE_INCOME',$3::bigint,$4::bigint,NULL,$5::jsonb, now())`,
+          [dto.fantasyLeagueId, seller.id, clause.toString(), newSellerBal, JSON.stringify({ playerId: dto.playerId, fromTeamId: buyer.id })],
+        );
+      }
 
       const effective = dto.effectiveAt ? new Date(dto.effectiveAt) : new Date();
       // Cierra el slot del vendedor en la fecha efectiva
@@ -110,23 +140,26 @@ export class ValuationService {
         [slot.id, effective.toISOString()],
       );
 
-      // Regla de autopromoción: si el slot original era starter y no BENCH, el nuevo entra con mismo slot y starter=true.
-      // Caso contrario: entra como BENCH starter=false.
-      const originalSlotRow = await trx.query(
-        `SELECT slot, starter FROM ${T('fantasy_roster_slot')} WHERE id = $1`,
-        [slot.id],
-      );
-      const originalSlot = originalSlotRow[0]?.slot ?? 'BENCH';
-      const originalStarter = !!originalSlotRow[0]?.starter;
-      const newSlot = originalStarter && originalSlot !== 'BENCH' ? originalSlot : 'BENCH';
-      const newStarter = originalStarter && originalSlot !== 'BENCH';
+      // Siempre entra como BENCH y starter=false
+      const newSlot = 'BENCH';
+      const newStarter = false;
 
-      // Crea slot en comprador con valid_from effectiveAt y posibles starter/slot adaptados
+      // Inserta/activa en comprador con UPSERT (si ya estuvo en ese equipo)
       await trx.query(
         `
         INSERT INTO ${T('fantasy_roster_slot')}
           (fantasy_league_id, fantasy_team_id, player_id, slot, starter, active, acquisition_price, clause_value, valid_from, created_at, updated_at)
         VALUES ($1, $2, $3, $6, $7, true, $4::bigint, $4::bigint, $5, now(), now())
+        ON CONFLICT (fantasy_league_id, fantasy_team_id, player_id)
+        DO UPDATE SET
+          active = true,
+          slot = 'BENCH',
+          starter = false,
+          acquisition_price = EXCLUDED.acquisition_price,
+          clause_value = EXCLUDED.clause_value,
+          valid_from = EXCLUDED.valid_from,
+          valid_to = NULL,
+          updated_at = now()
         `,
         [dto.fantasyLeagueId, buyer.id, dto.playerId, clause.toString(), effective.toISOString(), newSlot, newStarter],
       );

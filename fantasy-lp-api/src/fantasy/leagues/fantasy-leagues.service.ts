@@ -34,13 +34,18 @@ export class FantasyLeaguesService {
     if (!admin) throw new BadRequestException('Manager no existe');
 
     const invite = genInviteCode();
+    // Si no se especifica hora de cierre, usar la hora actual (HH:mm) para que rote cada día a esta hora
+    const now = new Date();
+    const hh = String(now.getUTCHours()).padStart(2, '0');
+    const mm = String(now.getUTCMinutes()).padStart(2, '0');
+    const defaultClose = `${hh}:${mm}`;
     const league = this.leagues.create({
       name: dto.name,
       inviteCode: invite,
       adminManager: admin,
       initialBudget: String(dto.initialBudget ?? 100_000_000),
       clauseMultiplier: String(dto.clauseMultiplier ?? 1.5),
-      marketCloseTime: dto.marketCloseTime ?? '20:00',
+      marketCloseTime: dto.marketCloseTime ?? defaultClose,
       timezone: dto.timezone ?? 'Europe/Madrid',
       scoringConfig: dto.scoringConfig ?? { kill: 3, assist: 2, death: -1, cs10: 0.5, win: 2 },
       rosterConfig: dto.rosterConfig ?? { slots: ['TOP', 'JNG', 'MID', 'ADC', 'SUP'], bench: 2 },
@@ -198,10 +203,23 @@ export class FantasyLeaguesService {
    */
   async getCurrentMarket(leagueId: number) {
     // ciclo más reciente
-    const [cycle] = await this.ds.query(
+    let [cycle] = await this.ds.query(
       `SELECT id, opens_at, closes_at FROM ${T('market_cycle')} WHERE fantasy_league_id=$1 ORDER BY id DESC LIMIT 1`,
       [leagueId],
     );
+
+    // Lazy self-heal: si el último ciclo está vencido (o no hay), rotar ahora mismo.
+    const now = new Date();
+    if (!cycle || (cycle?.closes_at && new Date(cycle.closes_at) <= now)) {
+      try {
+        await this.market.settleAndRotate(leagueId, now);
+      } catch {}
+      const [fresh] = await this.ds.query(
+        `SELECT id, opens_at, closes_at FROM ${T('market_cycle')} WHERE fantasy_league_id=$1 ORDER BY id DESC LIMIT 1`,
+        [leagueId],
+      );
+      if (fresh) cycle = fresh;
+    }
     if (!cycle) return { cycle: null, orders: [], serverTime: new Date().toISOString() };
 
     // órdenes del ciclo con highest bid y minNextBid
@@ -445,6 +463,13 @@ export class FantasyLeaguesService {
         [leagueId],
       );
       const takenIds = new Set<number>(taken.map((r: any) => Number(r.player_id)));
+
+      // Excluir también jugadores que ya están en órdenes de mercado abiertas
+      const openOrders = await qr.query(
+        `SELECT player_id::bigint AS player_id FROM ${T('market_order')} WHERE fantasy_league_id = $1 AND status = 'OPEN'`,
+        [leagueId],
+      );
+      for (const r of openOrders) takenIds.add(Number(r.player_id));
 
       type CoreRole = 'TOP' | 'JNG' | 'MID' | 'ADC' | 'SUP';
 

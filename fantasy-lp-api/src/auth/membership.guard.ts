@@ -1,8 +1,13 @@
 import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
+import { T } from '../database/schema.util';
 
 @Injectable()
 export class MembershipGuard implements CanActivate {
-  canActivate(ctx: ExecutionContext): boolean {
+  constructor(@InjectDataSource() private ds: DataSource) {}
+
+  async canActivate(ctx: ExecutionContext): Promise<boolean> {
     const enable = process.env.ENABLE_AUTH?.toLowerCase() === 'true';
     if (!enable) return true;
     const req = ctx.switchToHttp().getRequest();
@@ -15,6 +20,7 @@ export class MembershipGuard implements CanActivate {
     const query = req.query || {};
     const body = req.body || {};
     const base: string = (req.baseUrl || req.path || req.originalUrl || '').toString();
+    const method: string = (req.method || 'GET').toString().toUpperCase();
 
     let targetLeagueId: number = NaN;
     let targetTeamId: number = NaN;
@@ -33,6 +39,22 @@ export class MembershipGuard implements CanActivate {
       // Fallback genérico
       targetLeagueId = Number(params.leagueId ?? query.leagueId ?? body.leagueId);
       targetTeamId = Number(params.teamId ?? body.teamId);
+    }
+
+    // Permitir lectura de roster de otros equipos si es GET y ruta de roster
+    const isTeamRosterRead = method === 'GET' && /\/fantasy\/teams\/.+\/roster(\/compact)?\b/.test(base);
+    if (isTeamRosterRead && !Number.isNaN(targetTeamId) && user.leagueId) {
+      // Verificamos que el equipo pertenece a la misma liga del usuario
+      const rows = await this.ds.query(
+        `SELECT fantasy_league_id FROM ${T('fantasy_team')} WHERE id = $1`,
+        [Number(targetTeamId)],
+      );
+      const teamLeagueId = rows[0]?.fantasy_league_id ? Number(rows[0].fantasy_league_id) : NaN;
+      if (!Number.isNaN(teamLeagueId) && Number(user.leagueId) === teamLeagueId) {
+        // Permitimos ver roster ajeno de la misma liga
+        return true;
+      }
+      throw new ForbiddenException('No perteneces a esta liga');
     }
 
     if (!Number.isNaN(targetLeagueId) && user.leagueId && Number(user.leagueId) !== targetLeagueId) {

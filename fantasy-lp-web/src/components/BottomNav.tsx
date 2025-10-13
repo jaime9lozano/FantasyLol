@@ -6,7 +6,7 @@ export default function BottomNav() {
   const nav = useNavigate();
   const active = useMemo(() => {
     if (loc.pathname.startsWith('/market')) return 'market';
-    if (loc.pathname.startsWith('/sell')) return 'sell';
+    if (loc.pathname.startsWith('/team') || loc.pathname.startsWith('/sell')) return 'team';
     return 'home';
   }, [loc.pathname]);
 
@@ -26,9 +26,9 @@ export default function BottomNav() {
 
   return (
     <nav style={{ position: 'fixed', bottom: 0, left: 0, right: 0, borderTop: '1px solid #eee', background: '#fafafa', display: 'flex' }}>
-      <Btn id="home" label="Mi equipo" to="/home" />
+      <Btn id="home" label="Mi liga" to="/home" />
       <Btn id="market" label="Mercado" to="/market" />
-      <Btn id="sell" label="Vender" to="/sell" />
+      <Btn id="team" label="Mi equipo" to="/team" />
     </nav>
   );
 }

@@ -391,8 +391,8 @@ export class MarketService {
       );
       for (const r of openOrderRows) taken.add(Number(r.pid));
 
-      const leagueRow = await trx.query(`SELECT source_league_id FROM ${T('fantasy_league')} WHERE id = $1`, [fantasyLeagueId]);
-      const sourceLeagueId: number | null = leagueRow[0]?.source_league_id ?? null;
+  const leagueRow = await trx.query(`SELECT source_league_id, market_close_time FROM ${T('fantasy_league')} WHERE id = $1`, [fantasyLeagueId]);
+  const sourceLeagueId: number | null = leagueRow[0]?.source_league_id ?? null;
       const candidateRows = await trx.query(
         sourceLeagueId
           ? `SELECT p.id::bigint AS pid
@@ -437,10 +437,21 @@ export class MarketService {
         );
       }
 
+      // Cierre diario a la hora configurada (UTC) siguiendo market_close_time de la liga
+      let closesAt: Date;
+      try {
+        const mct: string = leagueRow[0]?.market_close_time || '20:00';
+        const { hh, mm } = this.parseTime(mct);
+        const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hh, mm, 0));
+        closesAt = now < today ? today : new Date(today.getTime() + 24 * 3600 * 1000);
+      } catch {
+        closesAt = new Date(now.getTime() + 24 * 3600 * 1000);
+      }
+
       const cycle = this.cycles.create({
         fantasyLeague: { id: fantasyLeagueId } as any,
         opensAt: now,
-        closesAt: new Date(now.getTime() + 24 * 3600 * 1000),
+        closesAt,
       });
       const saved = await this.cycles.save(cycle);
 
@@ -474,6 +485,14 @@ export class MarketService {
     if (!last.length) return this.startNewCycle(fantasyLeagueId, 6, now);
     const cycle = last[0];
     if (cycle.closesAt <= now) {
+      return this.startNewCycle(fantasyLeagueId, 6, now);
+    }
+    // Si el ciclo sigue abierto pero ya no tiene órdenes OPEN (todas cerradas/canceladas), arrancar uno nuevo
+    const [{ cnt }]: Array<{ cnt: number }> = await this.ds.query(
+      `SELECT COUNT(*)::int AS cnt FROM ${T('market_order')} WHERE fantasy_league_id = $1 AND cycle_id = $2 AND status = 'OPEN'`,
+      [fantasyLeagueId, cycle.id],
+    );
+    if (Number(cnt || 0) === 0) {
       return this.startNewCycle(fantasyLeagueId, 6, now);
     }
     return { cycleId: cycle.id, playerIds: [] };

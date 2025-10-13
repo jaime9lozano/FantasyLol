@@ -30,11 +30,24 @@ export class FantasyTeamsService {
               frs.slot,
               frs.starter,
               frs.locked_until,
+              frs.clause_value::bigint AS clause_value,
               p.id AS player_id,
               p.display_name AS player_name,
+              UPPER(
+                CASE r.code
+                  WHEN 'JUNGLE'  THEN 'JNG'
+                  WHEN 'SUPPORT' THEN 'SUP'
+                  WHEN 'BOT'     THEN 'ADC'
+                  WHEN 'BOTTOM'  THEN 'ADC'
+                  ELSE COALESCE(r.code, 'FLEX')
+                END
+              ) AS role_norm,
               COALESCE(fpv.current_value, 0)::bigint AS value
        FROM ${T('fantasy_roster_slot')} frs
        JOIN public.player p ON p.id = frs.player_id
+       LEFT JOIN public.team_player_membership tpm
+              ON tpm.player_id = p.id AND tpm.is_current = true
+       LEFT JOIN public.role r ON r.id = tpm.main_role_id
        LEFT JOIN ${T('fantasy_player_valuation')} fpv
               ON fpv.fantasy_league_id = frs.fantasy_league_id AND fpv.player_id = frs.player_id
        WHERE frs.fantasy_team_id = $1 AND frs.active = true
@@ -55,27 +68,69 @@ export class FantasyTeamsService {
       slot: r.slot,
       starter: r.starter,
       lockedUntil: r.locked_until,
-      player: { id: Number(r.player_id), name: r.player_name },
+      player: { id: Number(r.player_id), name: r.player_name, role: r.role_norm ?? null },
+        clause: r.clause_value != null ? Number(r.clause_value) : null,
       value: Number(r.value),
     }));
   }
 
   async moveLineup(teamId: number, dto: MoveLineupDto) {
     return this.ds.transaction(async (trx) => {
-      const slot = await trx.findOne(FantasyRosterSlot, {
-        where: { id: dto.rosterSlotId, fantasyTeam: { id: teamId } as any, active: true },
-        lock: { mode: 'pessimistic_write' },
-      });
+      // Bloqueamos la fila del roster para actualización y obtenemos player_id
+      const rows = await trx.query(
+        `SELECT id, player_id, locked_until
+         FROM ${T('fantasy_roster_slot')}
+         WHERE id = $1 AND fantasy_team_id = $2 AND active = true
+         FOR UPDATE`,
+        [dto.rosterSlotId, teamId],
+      );
+      const slot = rows[0];
       if (!slot) throw new BadRequestException('Slot no encontrado');
 
-      if (slot.lockedUntil && slot.lockedUntil > new Date()) {
+      const lockedUntil: Date | null = slot.locked_until ? new Date(slot.locked_until) : null;
+      if (lockedUntil && lockedUntil > new Date()) {
         throw new BadRequestException('Jugador bloqueado por partido en curso');
       }
 
-      slot.slot = dto.slot;
-      slot.starter = dto.starter;
-      await trx.save(slot);
-      return slot;
+      // Validación de rol: solo puede moverse a su rol principal o al banquillo
+      const roleRows = await trx.query(
+        `SELECT UPPER(
+                  CASE r.code
+                    WHEN 'JUNGLE'  THEN 'JNG'
+                    WHEN 'SUPPORT' THEN 'SUP'
+                    WHEN 'BOT'     THEN 'ADC'
+                    WHEN 'BOTTOM'  THEN 'ADC'
+                    ELSE COALESCE(r.code, 'FLEX')
+                  END
+               ) AS role_norm
+         FROM public.team_player_membership tpm
+         LEFT JOIN public.role r ON r.id = tpm.main_role_id
+         WHERE tpm.player_id = $1 AND tpm.is_current = true
+         LIMIT 1`,
+        [Number(slot.player_id)],
+      );
+      const roleNorm: string | null = roleRows[0]?.role_norm ?? null;
+      if (dto.slot !== 'BENCH') {
+        if (!roleNorm || roleNorm === 'FLEX') {
+          throw new BadRequestException('Este jugador solo puede alinearse en BANQUILLO');
+        }
+        if (roleNorm !== dto.slot) {
+          throw new BadRequestException(`Solo se puede alinear como ${roleNorm}`);
+        }
+      }
+
+      await trx.query(
+        `UPDATE ${T('fantasy_roster_slot')}
+           SET slot = $3, starter = $4, updated_at = now()
+         WHERE id = $1 AND fantasy_team_id = $2`,
+        [dto.rosterSlotId, teamId, dto.slot, dto.starter],
+      );
+
+      const [after] = await trx.query(
+        `SELECT id, slot, starter FROM ${T('fantasy_roster_slot')} WHERE id = $1`,
+        [dto.rosterSlotId],
+      );
+      return { id: Number(after.id), slot: after.slot, starter: after.starter };
     });
   }
 
