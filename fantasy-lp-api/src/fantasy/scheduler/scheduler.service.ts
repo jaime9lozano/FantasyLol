@@ -166,7 +166,7 @@ export class FantasySchedulerService {
    *  - Recalcula team_points para el periodo en curso y el anterior por cada liga.
    *  - No paga recompensas aquí; sólo puntos. Las recompensas se pagan en closeIfFinished.
    */
-  @Cron('*/5 * * * *')
+  @Cron('* * * * *')
   async recomputeActiveAndRecentPeriods() {
     try {
       const leagues: Array<{ id: number }> = await this.ds.query(
@@ -204,7 +204,7 @@ export class FantasySchedulerService {
    * 5) Cierre de periodos finalizados con gracia (cada 10 minutos)
    *  - Detecta periodos cuya ends_at + grace ha pasado y marca recompensas si no se pagaron.
    */
-  @Cron('*/10 * * * *')
+  @Cron('* * * * *')
   async closeFinishedPeriodsWithRewards() {
     const graceMin = Number(process.env.FANTASY_PERIOD_GRACE_MIN ?? '15');
     try {
@@ -214,11 +214,16 @@ export class FantasySchedulerService {
       const now = new Date();
       for (const lg of leagues) {
         const rows: Array<{ id: number; ends_at: string }>= await this.ds.query(
-          `SELECT id, ends_at
-           FROM ${T('fantasy_scoring_period')}
-           WHERE fantasy_league_id = $1
-             AND ends_at <= (now() - ($2::text || ' minutes')::interval)
-           ORDER BY ends_at ASC`,
+          `SELECT sp.id, sp.ends_at
+           FROM ${T('fantasy_scoring_period')} sp
+           WHERE sp.fantasy_league_id = $1
+             AND sp.ends_at <= (now() - ($2::text || ' minutes')::interval)
+             AND EXISTS (
+               SELECT 1 FROM ${T('fantasy_team_points')} tp
+               WHERE tp.fantasy_league_id = sp.fantasy_league_id
+                 AND tp.fantasy_scoring_period_id = sp.id
+             )
+           ORDER BY sp.ends_at ASC`,
           [lg.id, graceMin],
         );
         for (const p of rows) {
@@ -233,12 +238,46 @@ export class FantasySchedulerService {
           if (paid.length) continue;
           // Asegurar recompute final y luego pagar
           await this.scoring.computeForPeriod(lg.id, p.id);
-          await this.rewards.rewardPeriod(lg.id, p.id);
-          this.logger.log(`Periodo ${p.id} cerrado y recompensado en liga ${lg.id}`);
+          const res = await this.rewards.rewardPeriod(lg.id, p.id);
+          if ((res as any)?.rewarded > 0) {
+            this.logger.log(`Periodo ${p.id} cerrado y recompensado en liga ${lg.id} (equipos premiados=${(res as any).rewarded})`);
+          }
         }
       }
     } catch (e) {
       this.logger.error('Error en closeFinishedPeriodsWithRewards()', e as any);
+    }
+  }
+
+  /**
+   * 6) Generación de nuevas semanas/periodos automáticamente (cada 30 minutos)
+   *  - Recorre todas las ligas y ejecuta autoGenerateWeeklyPeriods para crear semanas futuras
+   *    basadas en los games de la liga base (public.game). No duplica existentes.
+   */
+  @Cron('*/30 * * * *')
+  async ensureFutureWeeklyPeriods() {
+    try {
+      const leagues: Array<{ id: number }> = await this.ds.query(
+        `SELECT id FROM ${T('fantasy_league')}`,
+      );
+      let totalCreated = 0;
+      for (const lg of leagues) {
+        try {
+          const res = await this.scoring.autoGenerateWeeklyPeriods(lg.id);
+          const created = Number((res as any)?.created ?? 0);
+          if (created > 0) {
+            totalCreated += created;
+            this.logger.log(`Generadas ${created} semanas nuevas en liga ${lg.id}`);
+          }
+        } catch (e) {
+          this.logger.warn(`autoGenerateWeeklyPeriods falló para liga ${lg.id}: ${(e as Error).message}`);
+        }
+      }
+      if (totalCreated > 0) {
+        this.logger.log(`Generación periódica de semanas: total nuevas=${totalCreated}`);
+      }
+    } catch (e) {
+      this.logger.error('Error en ensureFutureWeeklyPeriods()', e as any);
     }
   }
 }

@@ -6,6 +6,7 @@ import { FantasySchedulerService } from './scheduler.service';
 import { FantasyMarketModule } from '../market/fantasy-market.module';
 import { FantasyValuationModule } from '../valuation/fantasy-valuation.module';
 import { FantasyScoringModule } from '../scoring/fantasy-scoring.module';
+import { FantasyLeaguesModule } from '../leagues/fantasy-leagues.module';
 import { FantasyLeague } from '../leagues/fantasy-league.entity';
 
 @Module({
@@ -15,7 +16,9 @@ import { FantasyLeague } from '../leagues/fantasy-league.entity';
     FantasyMarketModule,
     FantasyValuationModule,
     FantasyScoringModule,
+    FantasyLeaguesModule,
   ],
   providers: [FantasySchedulerService],
+  
 })
 export class FantasySchedulerModule {}
