@@ -26,11 +26,14 @@ export class ValuationService {
     return this.ds.transaction(async (trx) => {
       // Liga (fantasy) -> usar schema activo
       const leagues = await trx.query(
-        `SELECT id, clause_multiplier FROM ${T('fantasy_league')} WHERE id = $1`,
+        `SELECT id, clause_multiplier, economic_config FROM ${T('fantasy_league')} WHERE id = $1`,
         [dto.fantasyLeagueId],
       );
       if (leagues.length === 0) throw new BadRequestException('Liga no encontrada');
       const league = leagues[0];
+      const econCfg = league.economic_config || {};
+      const valCfg = econCfg.valuation || {};
+  const clauseBoost = Number(valCfg.clauseBoost ?? 1.8);
 
   // Verifica elegibilidad (no permitir pagar cláusula por jugador fuera del pool)
   await assertPlayerEligible(this.ds, dto.fantasyLeagueId, dto.playerId, 'payClause');
@@ -92,7 +95,7 @@ export class ValuationService {
           [dto.fantasyLeagueId, dto.playerId],
         );
         const currentValue = vals[0]?.current_value != null ? BigInt(vals[0].current_value) : 0n;
-        const mult = Number(league.clause_multiplier ?? 1.5);
+        const mult = Number(league.clause_multiplier ?? 1.5) * clauseBoost;
         clause = (currentValue * BigInt(Math.round(mult * 100))) / 100n;
       }
 
@@ -187,13 +190,14 @@ export class ValuationService {
     const budget: number = Number(econRow?.budget ?? 100_000_000);
 
     // Parámetros del modelo power-law y calibración
-    const gamma = Number(valCfg.powerGamma ?? 1.3); // curvatura (1=lineal, >1 más caro el élite)
-    const topN = Math.max(1, Number(valCfg.topN ?? 5)); // calibración con top N
-    const topSpendFactor = Number(valCfg.topSpendFactor ?? 1.6); // sum(topN) ≈ factor * presupuesto
+  const gamma = Number(valCfg.powerGamma ?? 1.5); // curvatura (1=lineal, >1 más caro el élite)
+  const topN = Math.max(1, Number(valCfg.topN ?? 5)); // calibración con top N
+  const topSpendFactor = Number(valCfg.topSpendFactor ?? 3.0); // sum(topN) ≈ factor * presupuesto
+  const pricingMultiplier = Number(valCfg.pricingMultiplier ?? 1.6); // multiplicador global por defecto aún más alto
 
     // Caps
-    const min = Math.max(1_000_000, Number(valCfg.min ?? 1_000_000));
-    const max = Number(valCfg.hardCap ?? 200_000_000);
+  const min = Math.max(1_000_000, Number(valCfg.min ?? 1_000_000));
+  const max = Number(valCfg.hardCap ?? 400_000_000);
 
     // Decaimiento por inactividad (por periodos sin jugar)
     const idleThreshold = Number(inactCfg.periodsWithoutGameForDecay ?? 2);
@@ -272,7 +276,7 @@ export class ValuationService {
         tp = Math.max(Number(fb?.pts ?? 0), 0);
       }
       // si sigue siendo 0 y tampoco hay coreCode, lo dejamos en 0 -> min
-      let raw = Math.round(K * Math.pow(tp, gamma));
+  let raw = Math.round(K * Math.pow(tp, gamma));
 
       // Decaimiento por inactividad
       const [lastGameRow] = await this.ds.query(
@@ -298,7 +302,9 @@ export class ValuationService {
         }
       }
 
-      const value = Math.max(min, Math.min(max, raw));
+  // Encarecimiento global
+  raw = Math.round(raw * pricingMultiplier);
+  const value = Math.max(min, Math.min(max, raw));
       await this.ds.query(
         `INSERT INTO ${T('fantasy_player_valuation')} (fantasy_league_id, player_id, current_value, last_change, calc_date)
          VALUES ($1, $2, $3::bigint, 0, $4)
@@ -309,20 +315,23 @@ export class ValuationService {
     }
 
     // Propagar clause_value a roster slots activos abiertos (valid_to IS NULL) acorde a multiplier de la liga.
-    const [league] = await this.ds.query(`SELECT clause_multiplier FROM ${T('fantasy_league')} WHERE id = $1`, [fantasyLeagueId]);
+    const [league] = await this.ds.query(`SELECT clause_multiplier, economic_config FROM ${T('fantasy_league')} WHERE id = $1`, [fantasyLeagueId]);
     const mult = Number(league?.clause_multiplier ?? 1.5);
+    const econCfg2 = league?.economic_config || {};
+    const valCfg2 = econCfg2.valuation || {};
+  const clauseBoost = Number(valCfg2.clauseBoost ?? 1.8);
     await this.ds.query(
       `UPDATE ${T('fantasy_roster_slot')} fr
-       SET clause_value = ROUND(v.current_value::numeric * $2)::bigint,
+       SET clause_value = ROUND(v.current_value::numeric * $2 * $3)::bigint,
            updated_at = now()
        FROM ${T('fantasy_player_valuation')} v
        WHERE fr.fantasy_league_id = $1
          AND fr.player_id = v.player_id
          AND fr.active = true
          AND fr.valid_to IS NULL`,
-      [fantasyLeagueId, mult],
+      [fantasyLeagueId, mult, clauseBoost],
     );
 
-    return { ok: true, updated: playerIdsSet.size, multiplier: mult, calibration: { gamma, topN, topSpendFactor, targetSum, K } };
+    return { ok: true, updated: playerIdsSet.size, multiplier: mult, clauseBoost, calibration: { gamma, topN, topSpendFactor, pricingMultiplier, targetSum, K } };
   }
 }

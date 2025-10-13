@@ -54,6 +54,13 @@ export class FantasyLeaguesController {
     // Si hay token y trae leagueId, puede usarse en el servicio para validaciones futuras
     return this.svc.getCurrentMarket(Number(id));
   }
+
+  // Estado del setup inicial de liga (periodos/backfill/compute/recalc). Protegido por membresía.
+  @UseGuards(MembershipGuard)
+  @Get(':id/setup-status')
+  async setupStatus(@Param('id', ParseIntPipe) id: number) {
+    return this.svc.getSetupStatus(id);
+  }
   
   @UseGuards(MembershipGuard)
     @Get(':id/summary')

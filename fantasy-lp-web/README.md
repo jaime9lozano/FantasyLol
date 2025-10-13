@@ -1,4 +1,8 @@
 # Fantasy LP Web
+### Estado de configuración de liga
+
+Tras crear una liga, el backend realiza un setup en background. La pantalla de selección muestra un overlay con el progreso y la TopBar indica la etapa actual (generando jornadas, puntos históricos, etc.) consultando `GET /fantasy/leagues/:id/setup-status`.
+
 
 Cliente web mínimo (Vite + React) para probar endpoints de auth y discovery.
 

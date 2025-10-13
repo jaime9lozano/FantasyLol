@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { apiGetCurrentMarket, apiPlaceBid } from '../api';
 import BottomNav from '../components/BottomNav';
+import TopBar from '../components/TopBar';
 
 function decodeJwt(token: string | null): any | null {
   if (!token) return null;
@@ -53,10 +54,11 @@ export default function MarketPage() {
   if (loading) return <div style={{ padding: 16 }}>Cargando mercado…</div>;
   if (error) return <div style={{ padding: 16, color: 'crimson' }}>{error}</div>;
 
-  const leagueName = user?.memberships?.find(m => m.leagueId === leagueId)?.leagueName ?? `Liga #${leagueId}`;
+  const leagueName = user?.memberships?.find(m => m.leagueId === leagueId)?.leagueName ?? 'Mi liga';
 
   return (
-    <div style={{ padding: '16px 16px 64px', display: 'grid', gap: 16 }}>
+    <div style={{ padding: '72px 16px 64px', display: 'grid', gap: 16 }}>
+      <TopBar />
       <header>
         <h2 style={{ margin: 0 }}>Mercado — {leagueName}</h2>
         {data?.cycle && (

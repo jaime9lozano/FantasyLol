@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { http } from '../lib/http';
 import BottomNav from '../components/BottomNav';
+import TopBar from '../components/TopBar';
 
 function decodeJwt(token: string | null): any | null {
   if (!token) return null;
@@ -22,7 +23,7 @@ export default function HomePage() {
   const access = localStorage.getItem('access');
   const payload = useMemo(() => decodeJwt(access), [access]);
   const leagueId = payload?.leagueId; const teamId = payload?.teamId;
-  const leagueName = useMemo(() => user?.memberships?.find(m => m.leagueId === leagueId)?.leagueName ?? `Liga #${leagueId}`, [user, leagueId]);
+  const leagueName = useMemo(() => user?.memberships?.find(m => m.leagueId === leagueId)?.leagueName ?? 'Mi liga', [user, leagueId]);
 
   useEffect(() => {
     if (!leagueId || !teamId) return;
@@ -50,18 +51,8 @@ export default function HomePage() {
   if (!leagueId || !teamId) return <div style={{ padding: 16 }}>No hay contexto de liga. Vuelve al selector.</div>;
 
   return (
-    <div style={{ padding: '16px 16px 64px', display: 'grid', gap: 16 }}>
-      {/* Header */}
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div>
-          <div style={{ fontSize: 12, color: '#666' }}>Mi liga</div>
-          <h1 style={{ margin: 0 }}>{leagueName}</h1>
-        </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span style={{ opacity: 0.8 }}>Hola, {user?.displayName || 'manager'}</span>
-          <button onClick={() => { logout(); nav('/login', { replace: true }); }}>Salir</button>
-        </div>
-      </header>
+    <div style={{ padding: '72px 16px 64px', display: 'grid', gap: 16 }}>
+      <TopBar />
 
       {error && <div style={{ color: 'crimson' }}>{error}</div>}
 

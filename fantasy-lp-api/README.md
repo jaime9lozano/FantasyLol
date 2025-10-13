@@ -1,4 +1,14 @@
 # Fantasy LP API
+## Setup de liga en background
+
+Al crear una liga, el API ahora devuelve inmediatamente y lanza en background el setup pesado (generar jornadas, backfill de puntos históricos, compute por jornada y revalorar jugadores).
+
+- Endpoint de estado: `GET /fantasy/leagues/:id/setup-status` (requiere ser miembro de esa liga)
+  - Respuesta: `{ leagueId, status: 'pending'|'running'|'done'|'error', step?: string, details?: any, updatedAt }`
+  - Posibles `step`: `generating-periods`, `backfilling-player-points`, `computing-periods`, `revaluating`.
+
+Nota: El tracking actual es en memoria de proceso. Para producción, se recomienda persistir el estado en BD (tabla `fantasy_league_setup_status`) o usar una cola (BullMQ/Redis) para mayor resiliencia.
+
 
 API NestJS para Fantasy League of Legends.
 

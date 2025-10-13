@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import BottomNav from '../components/BottomNav';
+import TopBar from '../components/TopBar';
 import { http } from '../lib/http';
 
 function decodeJwt(token: string | null): any | null {
@@ -105,7 +106,8 @@ export default function PlayerPage() {
   const fmtMoney = (n: number) => new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n);
 
   return (
-    <div style={{ padding: '16px 16px 64px', display: 'grid', gap: 12 }}>
+    <div style={{ padding: '72px 16px 64px', display: 'grid', gap: 12 }}>
+      <TopBar />
       <button onClick={() => nav(-1)} style={{ width: 'fit-content' }}>← Volver</button>
       <h2 style={{ margin: 0 }}>Jugador</h2>
       {loading && <div>Cargando…</div>}

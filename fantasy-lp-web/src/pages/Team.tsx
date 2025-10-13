@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import BottomNav from '../components/BottomNav';
+import TopBar from '../components/TopBar';
 import { http } from '../lib/http';
 
 function decodeJwt(token: string | null): any | null {
@@ -68,7 +69,8 @@ export default function TeamPage() {
   };
 
   return (
-    <div style={{ padding: '16px 16px 64px', display: 'grid', gap: 12 }}>
+    <div style={{ padding: '72px 16px 64px', display: 'grid', gap: 12 }}>
+      <TopBar />
       <h2 style={{ margin: 0 }}>Mi equipo</h2>
       {error && <div style={{ color: 'crimson' }}>{error}</div>}
       {roster.map((s) => (

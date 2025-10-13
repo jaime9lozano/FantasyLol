@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { http } from '../lib/http';
+import { LoadingOverlay } from '../components/LoadingOverlay';
 import { useAuth } from '../auth/AuthContext';
 
 export default function LeagueSelectorPage() {
@@ -13,6 +14,7 @@ export default function LeagueSelectorPage() {
   const [newLeagueName, setNewLeagueName] = useState('Mi Fantasy League');
   const [newLeagueBase, setNewLeagueBase] = useState<'LCK' | 'LEC' | 'LPL'>('LCK');
   const [creating, setCreating] = useState(false);
+  const [progress, setProgress] = useState<{ leagueId: number; status: string; step?: string; details?: any } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,6 +89,22 @@ export default function LeagueSelectorPage() {
                 // Unirse a la liga como manager actual (el backend toma el userId del token)
                 await http.post('/fantasy/leagues/join', { inviteCode: league.inviteCode, teamName });
                 await selectLeague(Number(league.id));
+                // Poll del estado de setup en background hasta done/error (ya con contexto de liga seleccionado)
+                let cancelled = false;
+                setProgress({ leagueId: Number(league.id), status: 'pending', step: 'queued' });
+                const poll = async () => {
+                  try {
+                    const { data } = await http.get(`/fantasy/leagues/${league.id}/setup-status`);
+                    if (!cancelled) setProgress(data);
+                    if (!cancelled && data?.status && data.status !== 'done' && data.status !== 'error') {
+                      setTimeout(poll, 1000);
+                    }
+                  } catch {
+                    if (!cancelled) setTimeout(poll, 1500);
+                  }
+                };
+                poll();
+                // Si el setup ya ha acabado, vamos directo. Si sigue, vamos a Home y dejamos overlay un rato opcionalmente.
                 nav('/home', { replace: true });
               } catch (e: any) {
                 setError(e?.response?.data?.message || 'Error al crear/unirse a liga');
@@ -116,6 +134,22 @@ export default function LeagueSelectorPage() {
             </li>
           ))}
         </ul>
+      )}
+      {creating && (
+        <LoadingOverlay
+          title="Preparando tu liga"
+          message={<div>
+            <div>Estamos configurando periodos, puntos históricos y valoraciones iniciales.</div>
+            <small style={{ color: '#666' }}>
+              {progress?.step === 'generating-periods' && 'Generando jornadas…'}
+              {progress?.step === 'backfilling-player-points' && 'Calculando puntos históricos de jugadores…'}
+              {progress?.step === 'computing-periods' && 'Computando puntos por jornada…'}
+              {progress?.step === 'revaluating' && 'Calculando valoraciones iniciales…'}
+              {!progress?.step && 'En cola…'}
+            </small>
+          </div>}
+          progress={progress?.details?.total ? { total: progress.details.total, done: progress.details.computed ?? 0 } : undefined}
+        />
       )}
     </div>
   );

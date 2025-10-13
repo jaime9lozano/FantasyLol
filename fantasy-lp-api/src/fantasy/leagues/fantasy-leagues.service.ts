@@ -33,6 +33,15 @@ export class FantasyLeaguesService {
     private readonly valuation: ValuationService,
   ) {}
 
+  // --- Tracking ligero en memoria del setup de liga ---
+  private setupProgress: Map<number, { status: 'pending' | 'running' | 'done' | 'error'; step?: string; details?: any; updatedAt: string }>
+    = new Map();
+
+  getSetupStatus(leagueId: number) {
+    const s = this.setupProgress.get(leagueId) || { status: 'done', updatedAt: new Date().toISOString() } as any;
+    return { leagueId, ...s };
+  }
+
   async createLeague(adminManagerId: number, dto: CreateFantasyLeagueDto) {
     const admin = await this.managers.findOne({ where: { id: adminManagerId } });
     if (!admin) throw new BadRequestException('Manager no existe');
@@ -48,7 +57,7 @@ export class FantasyLeaguesService {
       inviteCode: invite,
       adminManager: admin,
       initialBudget: String(dto.initialBudget ?? 100_000_000),
-      clauseMultiplier: String(dto.clauseMultiplier ?? 1.5),
+  clauseMultiplier: String(dto.clauseMultiplier ?? 2.0),
       marketCloseTime: dto.marketCloseTime ?? defaultClose,
       timezone: dto.timezone ?? 'Europe/Madrid',
       scoringConfig: dto.scoringConfig ?? { kill: 3, assist: 2, death: -1, cs10: 0.5, win: 2 },
@@ -56,13 +65,13 @@ export class FantasyLeaguesService {
       economicConfig: (dto as any).economicConfig ?? {
         valuation: {
           min: 1_000_000,
-          hardCap: 200_000_000,
-          linearBase: 250_000,
-          linearPerPoint: 180_000,
-          quadraticThreshold: 20,
-          quadraticFactor: 50_000,
+          hardCap: 400_000_000,
+          powerGamma: 1.5,
+          topN: 5,
+          topSpendFactor: 3.0,
+          pricingMultiplier: 1.6,
+          clauseBoost: 1.8,
         },
-        dampening: { baseDivisor: 1, perPeriod: 0.1, maxFactor: 4 },
         inactivity: { periodsWithoutGameForDecay: 2, decayPercentPerExtraPeriod: 0.10, maxDecayPercent: 0.50 },
       },
       sourceLeagueCode: dto.sourceLeagueCode?.toUpperCase() ?? null,
@@ -98,7 +107,7 @@ export class FantasyLeaguesService {
       }
     }
     // Nuevo modelo: no fijamos source_tournament_id (abarca todos los torneos de esa liga)
-    const saved = await this.leagues.save(league);
+  const saved = await this.leagues.save(league);
     // Iniciar primer ciclo de mercado automáticamente (6 jugadores, 24h) si aún no existe
     try {
       await this.market.cancelOpenOrdersForConflicts(Number(saved.id));
@@ -107,21 +116,35 @@ export class FantasyLeaguesService {
       // no bloquear creación de liga por fallo al iniciar ciclo
     }
 
-    // Generar jornadas (periodos), backfill de puntos de jugadores, computar todos los periodos y revalorar
-    try {
-      await this.scoring.autoGenerateWeeklyPeriods(Number(saved.id));
-      await this.scoring.backfillAllPlayerPoints(Number(saved.id));
-      const periods: Array<{ id: number }> = await this.ds.query(
-        `SELECT id FROM ${T('fantasy_scoring_period')} WHERE fantasy_league_id = $1 ORDER BY starts_at ASC`,
-        [Number(saved.id)],
-      );
-      for (const p of periods) {
-        await this.scoring.computeForPeriod(Number(saved.id), Number(p.id));
+    // Generar jornadas, backfill, compute y revalorar en background con tracking en memoria
+    const leagueId = Number(saved.id);
+    this.setupProgress.set(leagueId, { status: 'pending', step: 'queued', updatedAt: new Date().toISOString() });
+    setTimeout(async () => {
+      const upd = (step: string, details?: any) => this.setupProgress.set(leagueId, { status: 'running', step, details, updatedAt: new Date().toISOString() });
+      try {
+        upd('generating-periods');
+        const pgen = await this.scoring.autoGenerateWeeklyPeriods(leagueId);
+        upd('backfilling-player-points', { createdPeriods: (pgen as any)?.created ?? undefined });
+        const bf = await this.scoring.backfillAllPlayerPoints(leagueId);
+        upd('computing-periods', { backfill: bf });
+        const periods: Array<{ id: number }> = await this.ds.query(
+          `SELECT id FROM ${T('fantasy_scoring_period')} WHERE fantasy_league_id = $1 ORDER BY starts_at ASC`,
+          [leagueId],
+        );
+        let computed = 0;
+        for (const p of periods) {
+          upd('computing-periods', { total: periods.length, computed });
+          await this.scoring.computeForPeriod(leagueId, Number(p.id));
+          computed++;
+        }
+        upd('revaluating');
+        await this.valuation.recalcAllValues(leagueId);
+        this.setupProgress.set(leagueId, { status: 'done', step: 'done', updatedAt: new Date().toISOString() });
+      } catch (e) {
+        this.setupProgress.set(leagueId, { status: 'error', step: 'failed', details: { message: (e as Error).message }, updatedAt: new Date().toISOString() });
       }
-      await this.valuation.recalcAllValues(Number(saved.id));
-    } catch (e) {
-      // No bloquear creación de liga por posible dataset vacío o errores de ingesta
-    }
+    }, 0);
+
     return saved;
   }
 
