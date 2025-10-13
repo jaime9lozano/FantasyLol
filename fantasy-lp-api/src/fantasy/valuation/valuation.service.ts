@@ -179,99 +179,132 @@ export class ValuationService {
   }
 
   async recalcAllValues(fantasyLeagueId: number, asOf = new Date()) {
-    // Core: 'game' se queda en public. Fantasy: usar schema activo.
-    const rows: Array<{ player_id: number; avg_points: number }> = await this.ds.query(
-      `
-      WITH ranked AS (
-        SELECT
-          fpp.player_id,
-          fpp.points::float AS points,
-          g.datetime_utc,
-          ROW_NUMBER() OVER (PARTITION BY fpp.player_id ORDER BY g.datetime_utc DESC) rn
-        FROM ${T('fantasy_player_points')} fpp
-        JOIN public.game g ON g.id = fpp.game_id
-        WHERE fpp.fantasy_league_id = $1
-      )
-      SELECT player_id, AVG(points) AS avg_points
-      FROM ranked
-      WHERE rn <= 5
-      GROUP BY player_id
-      `,
+    // 1) Cargar configuración económica y presupuesto de la liga
+    const [econRow] = await this.ds.query(`SELECT economic_config, initial_budget::bigint AS budget FROM ${T('fantasy_league')} WHERE id = $1`, [fantasyLeagueId]);
+    const econ = econRow?.economic_config || {};
+    const valCfg = econ.valuation || {};
+    const inactCfg = econ.inactivity || {};
+    const budget: number = Number(econRow?.budget ?? 100_000_000);
+
+    // Parámetros del modelo power-law y calibración
+    const gamma = Number(valCfg.powerGamma ?? 1.3); // curvatura (1=lineal, >1 más caro el élite)
+    const topN = Math.max(1, Number(valCfg.topN ?? 5)); // calibración con top N
+    const topSpendFactor = Number(valCfg.topSpendFactor ?? 1.6); // sum(topN) ≈ factor * presupuesto
+
+    // Caps
+    const min = Math.max(1_000_000, Number(valCfg.min ?? 1_000_000));
+    const max = Number(valCfg.hardCap ?? 200_000_000);
+
+    // Decaimiento por inactividad (por periodos sin jugar)
+    const idleThreshold = Number(inactCfg.periodsWithoutGameForDecay ?? 2);
+    const idleDecayPer = Number(inactCfg.decayPercentPerExtraPeriod ?? 0.10);
+    const idleDecayMax = Number(inactCfg.maxDecayPercent ?? 0.50);
+
+    // 2) Total de puntos por jugador (hasta la fecha) según fantasy_player_points
+    const totalsList: Array<{ player_id: number; total_points: number }> = await this.ds.query(
+      `SELECT fpp.player_id, COALESCE(SUM(fpp.points)::float,0) AS total_points
+       FROM ${T('fantasy_player_points')} fpp
+       JOIN public.game g ON g.id = fpp.game_id
+       WHERE fpp.fantasy_league_id = $1 AND g.datetime_utc <= $2
+       GROUP BY fpp.player_id`,
+      [fantasyLeagueId, asOf.toISOString()],
+    );
+    const totalsMap = new Map<number, number>(totalsList.map(r => [Number(r.player_id), Number(r.total_points)]));
+
+    // 2b) Asegurar que todos los jugadores en roster se incluyan, incluso si no tienen fpp
+    const rosterPlayers: Array<{ player_id: number }> = await this.ds.query(
+      `SELECT DISTINCT frs.player_id::bigint AS player_id
+       FROM ${T('fantasy_roster_slot')} frs
+       WHERE frs.fantasy_league_id = $1`,
       [fantasyLeagueId],
     );
-    // Número de periodos finalizados (ends_at <= asOf) para amortiguar inflación de valores.
+    const playerIdsSet = new Set<number>([...totalsMap.keys()]);
+    for (const r of rosterPlayers) playerIdsSet.add(Number(r.player_id));
+
+    // 3) Calibrar constante K para que sum(topN) ≈ factor * presupuesto
+  const sorted = [...totalsList].sort((a, b) => (b.total_points - a.total_points));
+    const top = sorted.slice(0, topN);
+    const denom = top.reduce((acc, r) => acc + Math.pow(Math.max(r.total_points, 0), gamma), 0);
+    const targetSum = budget * topSpendFactor;
+    const K = denom > 0 ? targetSum / denom : 0;
+
+    // 4) Número de periodos completados para medir inactividad
     const [pc] = await this.ds.query(
       `SELECT COUNT(*)::int AS c FROM ${T('fantasy_scoring_period')} WHERE fantasy_league_id = $1 AND ends_at <= $2`,
       [fantasyLeagueId, asOf.toISOString()],
     );
     const periodsCompleted = Number(pc?.c ?? 0);
-    // Fórmula escalable:
-    // base_linear = 250k + 180k * avg_points
-    // boost cuadrático a partir de 20 puntos: + 50k * (max(avg_points-20,0))^2
-    // hard cap elevado a 200M para jugadores élite.
-  // Cargar configuración económica
-  const [econRow] = await this.ds.query(`SELECT economic_config FROM ${T('fantasy_league')} WHERE id = $1`, [fantasyLeagueId]);
-  const econ = econRow?.economic_config || {};
-  const valCfg = econ.valuation || {};
-  const dampCfg = econ.dampening || {};
-  const inactCfg = econ.inactivity || {};
-  // Requisito: mínimo absoluto 1.000.000 (aunque econ_config diga menos)
-  const min = Math.max(1_000_000, Number(valCfg.min ?? 250_000));
-  const max = Number(valCfg.hardCap ?? 200_000_000);
-  const linearBase = Number(valCfg.linearBase ?? 250_000);
-  const linearPerPoint = Number(valCfg.linearPerPoint ?? 180_000);
-  const quadTh = Number(valCfg.quadraticThreshold ?? 20);
-  const quadFactor = Number(valCfg.quadraticFactor ?? 50_000);
-  const baseDiv = Number(dampCfg.baseDivisor ?? 1);
-  const perPeriod = Number(dampCfg.perPeriod ?? 0.1);
-  const maxFactor = Number(dampCfg.maxFactor ?? 4);
-  const idleThreshold = Number(inactCfg.periodsWithoutGameForDecay ?? 2);
-  const idleDecayPer = Number(inactCfg.decayPercentPerExtraPeriod ?? 0.10); // 0.10 => 10%
-  const idleDecayMax = Number(inactCfg.maxDecayPercent ?? 0.50); // 50%
+
+    // 5) Calcular valor por jugador
     const today = asOf.toISOString().slice(0, 10);
-    for (const r of rows) {
-      const ap = r.avg_points ?? 0;
-      const linear = linearBase + linearPerPoint * ap;
-      const quad = ap > quadTh ? quadFactor * Math.pow(ap - quadTh, 2) : 0;
-  let raw = Math.round(linear + quad);
-      // Amortiguación configurable
-      let damp = baseDiv + periodsCompleted * perPeriod;
-      if (damp > maxFactor) damp = maxFactor;
-      raw = Math.round(raw / damp);
-      // Penalización por inactividad: calcular periodos idle
-      // Buscar último game de ese jugador (rápido usando fpp + game)
+    // Datos para fallback de totales (si un jugador de roster no tiene fpp en esta liga)
+    const [lg] = await this.ds.query(`SELECT source_league_id, scoring_config FROM ${T('fantasy_league')} WHERE id = $1`, [fantasyLeagueId]);
+    const sourceLeagueId: number | null = lg?.source_league_id ?? null;
+    const sCfg = lg?.scoring_config || {};
+    const killW = Number(sCfg.kill ?? 3);
+    const assistW = Number(sCfg.assist ?? 2);
+    const deathW = Number(sCfg.death ?? -1);
+    const cs10W = Number(sCfg.cs10 ?? 0.5);
+    const winW = Number(sCfg.win ?? 2);
+    const codeRow = sourceLeagueId ? await this.ds.query(`SELECT code FROM public.league WHERE id = $1`, [sourceLeagueId]) : [];
+    const coreCode: string | null = codeRow?.[0]?.code ?? null;
+
+    for (const playerId of playerIdsSet) {
+      // total points por fpp (si existe)
+      let tp = Math.max(Number(totalsMap.get(playerId) || 0), 0);
+      // fallback si es roster player sin fpp
+      if (tp === 0 && rosterPlayers.find(r => Number(r.player_id) === playerId) && coreCode) {
+        const [fb] = await this.ds.query(
+          `SELECT (
+              COALESCE(SUM(pgs.kills),0) * $3 +
+              COALESCE(SUM(pgs.assists),0) * $4 +
+              COALESCE(SUM(pgs.deaths),0) * $5 +
+              COALESCE(SUM(FLOOR(COALESCE(pgs.cs,0)/10.0)),0) * $6 +
+              COALESCE(SUM(CASE WHEN pgs.player_win THEN 1 ELSE 0 END),0) * $7
+           )::float AS pts
+           FROM public.player_game_stats pgs
+           JOIN public.game g ON g.id = pgs.game_id
+           JOIN public.tournament t ON t.id = g.tournament_id
+           WHERE pgs.player_id = $1 AND g.datetime_utc <= $2
+             AND (t.league = $8::text OR t.league ILIKE ($8::text) || '%' OR (t.league_icon_key IS NOT NULL AND t.league_icon_key ILIKE ($8::text) || '%'))`,
+          [playerId, asOf.toISOString(), killW, assistW, deathW, cs10W, winW, coreCode],
+        );
+        tp = Math.max(Number(fb?.pts ?? 0), 0);
+      }
+      // si sigue siendo 0 y tampoco hay coreCode, lo dejamos en 0 -> min
+      let raw = Math.round(K * Math.pow(tp, gamma));
+
+      // Decaimiento por inactividad
       const [lastGameRow] = await this.ds.query(
         `SELECT MAX(g.datetime_utc) AS last_dt
          FROM ${T('fantasy_player_points')} fpp
          JOIN public.game g ON g.id = fpp.game_id
          WHERE fpp.fantasy_league_id = $1 AND fpp.player_id = $2`,
-        [fantasyLeagueId, r.player_id],
+        [fantasyLeagueId, playerId],
       );
-      let decayFactor = 0;
       if (lastGameRow?.last_dt) {
-        // Calcular en qué periodo cayó ese last_dt
         const [periodIdxRow] = await this.ds.query(
           `SELECT COUNT(*)::int AS completed_before
            FROM ${T('fantasy_scoring_period')}
            WHERE fantasy_league_id = $1 AND ends_at <= $2`,
           [fantasyLeagueId, new Date(lastGameRow.last_dt).toISOString()],
         );
-        const lastPeriodIndex = Number(periodIdxRow?.completed_before ?? 0); // número de periodos completados hasta esa fecha
+        const lastPeriodIndex = Number(periodIdxRow?.completed_before ?? 0);
         const idle = periodsCompleted - lastPeriodIndex;
         if (idle >= idleThreshold) {
           const extra = idle - idleThreshold + 1;
-            const totalDecay = Math.min(extra * idleDecayPer, idleDecayMax);
-          decayFactor = totalDecay;
+          const totalDecay = Math.min(extra * idleDecayPer, idleDecayMax);
           raw = Math.round(raw * (1 - totalDecay));
         }
       }
+
       const value = Math.max(min, Math.min(max, raw));
       await this.ds.query(
         `INSERT INTO ${T('fantasy_player_valuation')} (fantasy_league_id, player_id, current_value, last_change, calc_date)
          VALUES ($1, $2, $3::bigint, 0, $4)
          ON CONFLICT (fantasy_league_id, player_id)
          DO UPDATE SET current_value = EXCLUDED.current_value, updated_at = now(), calc_date = EXCLUDED.calc_date`,
-        [fantasyLeagueId, r.player_id, value, today],
+        [fantasyLeagueId, playerId, value, today],
       );
     }
 
@@ -290,6 +323,6 @@ export class ValuationService {
       [fantasyLeagueId, mult],
     );
 
-    return { ok: true, updated: rows.length, multiplier: mult };
+    return { ok: true, updated: playerIdsSet.size, multiplier: mult, calibration: { gamma, topN, topSpendFactor, targetSum, K } };
   }
 }

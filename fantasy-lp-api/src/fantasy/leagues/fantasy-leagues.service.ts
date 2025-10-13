@@ -11,6 +11,8 @@ import { UpdateLeagueDto } from './dto/update-league.dto';
 import { T } from '../../database/schema.util';
 import { Tournament } from 'src/entities/tournament.entity';
 import { MarketService } from '../market/market.service';
+import { ScoringService } from '../scoring/scoring.service';
+import { ValuationService } from '../valuation/valuation.service';
 
 function genInviteCode(len = 6) {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -27,6 +29,8 @@ export class FantasyLeaguesService {
     @InjectRepository(FantasyTeam) private teams: Repository<FantasyTeam>,
     @InjectDataSource() private ds: DataSource,
     private readonly market: MarketService,
+    private readonly scoring: ScoringService,
+    private readonly valuation: ValuationService,
   ) {}
 
   async createLeague(adminManagerId: number, dto: CreateFantasyLeagueDto) {
@@ -102,6 +106,22 @@ export class FantasyLeaguesService {
     } catch (e) {
       // no bloquear creación de liga por fallo al iniciar ciclo
     }
+
+    // Generar jornadas (periodos), backfill de puntos de jugadores, computar todos los periodos y revalorar
+    try {
+      await this.scoring.autoGenerateWeeklyPeriods(Number(saved.id));
+      await this.scoring.backfillAllPlayerPoints(Number(saved.id));
+      const periods: Array<{ id: number }> = await this.ds.query(
+        `SELECT id FROM ${T('fantasy_scoring_period')} WHERE fantasy_league_id = $1 ORDER BY starts_at ASC`,
+        [Number(saved.id)],
+      );
+      for (const p of periods) {
+        await this.scoring.computeForPeriod(Number(saved.id), Number(p.id));
+      }
+      await this.valuation.recalcAllValues(Number(saved.id));
+    } catch (e) {
+      // No bloquear creación de liga por posible dataset vacío o errores de ingesta
+    }
     return saved;
   }
 
@@ -137,6 +157,10 @@ export class FantasyLeaguesService {
         // Log suave sin romper el flujo de unión a liga
         // console.warn('No se pudo autoasignar plantilla inicial:', (e as Error).message);
       }
+      // Recalcular valoraciones y cláusulas tras asignar roster para evitar mínimos por defecto
+      try {
+        await this.valuation.recalcAllValues(Number(league.id));
+      } catch {}
       return { leagueId: league.id, teamId: team.id, budgetRemaining: team.budgetRemaining };
     });
   }
@@ -565,10 +589,7 @@ export class FantasyLeaguesService {
           `INSERT INTO ${T('fantasy_player_valuation')}
              (fantasy_league_id, player_id, current_value, last_change, calc_date)
            VALUES ($1, $2, (1000000)::bigint, 0, now()::date)
-           ON CONFLICT (fantasy_league_id, player_id) DO UPDATE
-             SET current_value = EXCLUDED.current_value,
-                 updated_at    = now(),
-                 calc_date     = EXCLUDED.calc_date`,
+           ON CONFLICT (fantasy_league_id, player_id) DO NOTHING`,
           [leagueId, p.player_id],
         );
       }

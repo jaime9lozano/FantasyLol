@@ -341,4 +341,149 @@ export class ScoringService {
     }
     return { ok: true, created };
   }
+
+  // --------- Lecturas para front ---------
+  async listPeriods(fantasyLeagueId: number) {
+    return this.ds.query(
+      `SELECT id, name, starts_at, ends_at
+       FROM ${T('fantasy_scoring_period')}
+       WHERE fantasy_league_id = $1
+       ORDER BY starts_at ASC`,
+      [fantasyLeagueId],
+    );
+  }
+
+  async listTeamPointsForPeriod(fantasyLeagueId: number, periodId: number) {
+    return this.ds.query(
+      `SELECT tp.fantasy_team_id AS team_id,
+              ft.name AS team_name,
+              tp.points::float AS points
+       FROM ${T('fantasy_team_points')} tp
+       JOIN ${T('fantasy_team')} ft ON ft.id = tp.fantasy_team_id
+       WHERE tp.fantasy_league_id = $1 AND tp.fantasy_scoring_period_id = $2
+       ORDER BY points DESC, team_name ASC`,
+      [fantasyLeagueId, periodId],
+    );
+  }
+
+  // ---------- Player stats helpers ----------
+  async getPlayerSummary(fantasyLeagueId: number, playerId: number) {
+    const [player] = await this.ds.query(
+      `SELECT p.id, p.display_name AS name, p.country, p.photo_url
+       FROM public.player p
+       WHERE p.id = $1`,
+      [playerId],
+    );
+    const [val] = await this.ds.query(
+      `SELECT current_value::bigint AS v
+       FROM ${T('fantasy_player_valuation')}
+       WHERE fantasy_league_id = $1 AND player_id = $2`,
+      [fantasyLeagueId, playerId],
+    );
+    const [total] = await this.ds.query(
+      `SELECT COALESCE(SUM(points)::float, 0) AS total_points
+       FROM ${T('fantasy_player_points')}
+       WHERE fantasy_league_id = $1 AND player_id = $2`,
+      [fantasyLeagueId, playerId],
+    );
+    return {
+      player: player ?? { id: playerId },
+      currentValue: Number(val?.v ?? 0),
+      totalPoints: Number(total?.total_points ?? 0),
+    };
+  }
+
+  async getPlayerPointsByPeriod(fantasyLeagueId: number, playerId: number) {
+    const rows = await this.ds.query(
+      `SELECT sp.id AS period_id, sp.name,
+              COALESCE(SUM(fpp.points)::float, 0) AS points
+       FROM ${T('fantasy_scoring_period')} sp
+       LEFT JOIN ${T('fantasy_player_points')} fpp
+         ON fpp.fantasy_league_id = sp.fantasy_league_id
+        AND fpp.player_id = $2
+        AND EXISTS (
+          SELECT 1 FROM public.game g
+          WHERE g.id = fpp.game_id
+            AND g.datetime_utc >= sp.starts_at
+            AND g.datetime_utc <  sp.ends_at
+        )
+       WHERE sp.fantasy_league_id = $1
+       GROUP BY sp.id, sp.name
+       ORDER BY sp.starts_at ASC, sp.id ASC`,
+      [fantasyLeagueId, playerId],
+    );
+    return rows;
+  }
+
+  async getPlayerBreakdownForPeriod(fantasyLeagueId: number, playerId: number, periodId: number) {
+    // Devuelve por juego, y además un agregado por categoría (kills, assists, deaths, cs10, win) con puntos computados
+    const [period] = await this.ds.query(
+      `SELECT id, starts_at, ends_at FROM ${T('fantasy_scoring_period')} WHERE id = $1 AND fantasy_league_id = $2`,
+      [periodId, fantasyLeagueId],
+    );
+    if (!period) throw new BadRequestException('Periodo no encontrado');
+
+    const league = await this.leagues.findOne({ where: { id: fantasyLeagueId } });
+    const cfg = league?.scoringConfig ?? { kill: 3, assist: 2, death: -1, cs10: 0.5, win: 2 };
+    const killW = Number(cfg.kill ?? 3);
+    const assistW = Number(cfg.assist ?? 2);
+    const deathW = Number(cfg.death ?? -1);
+    const cs10W = Number(cfg.cs10 ?? 0.5);
+    const winW = Number(cfg.win ?? 2);
+
+    const core = await this.ds.query(`SELECT code FROM public.league WHERE id = $1`, [(league as any).sourceLeagueId ?? null]);
+    const code: string | null = core?.[0]?.code ?? null;
+    const games = await this.ds.query(
+      `SELECT g.id AS game_id,
+              g.datetime_utc,
+              pgs.kills, pgs.assists, pgs.deaths, pgs.cs, pgs.player_win,
+              (COALESCE(pgs.kills,0) * $5)::float AS points_kills,
+              (COALESCE(pgs.assists,0) * $6)::float AS points_assists,
+              (COALESCE(pgs.deaths,0) * $7)::float AS points_deaths,
+              (FLOOR(COALESCE(pgs.cs,0)/10.0) * $8)::float AS points_cs10,
+              ((CASE WHEN pgs.player_win THEN 1 ELSE 0 END) * $9)::float AS points_win,
+              (
+                COALESCE(pgs.kills,0) * $5 +
+                COALESCE(pgs.assists,0) * $6 +
+                COALESCE(pgs.deaths,0) * $7 +
+                FLOOR(COALESCE(pgs.cs,0)/10.0) * $8 +
+                (CASE WHEN pgs.player_win THEN 1 ELSE 0 END) * $9
+              )::float AS points_total
+       FROM public.player_game_stats pgs
+       JOIN public.game g ON g.id = pgs.game_id
+       JOIN public.tournament t ON t.id = g.tournament_id
+       WHERE pgs.player_id = $1
+         AND g.datetime_utc >= $2 AND g.datetime_utc < $3
+         AND (COALESCE($4::text, '') = '' OR t.league = $4::text OR t.league ILIKE ($4::text) || '%' OR (t.league_icon_key IS NOT NULL AND t.league_icon_key ILIKE ($4::text) || '%'))
+       ORDER BY g.datetime_utc ASC, g.id ASC`,
+      [playerId, period.starts_at, period.ends_at, code, killW, assistW, deathW, cs10W, winW],
+    );
+
+    // Agregado por categoría
+    const agg = await this.ds.query(
+      `SELECT
+          COALESCE(SUM(pgs.kills),0)::int AS kills,
+          COALESCE(SUM(pgs.assists),0)::int AS assists,
+          COALESCE(SUM(pgs.deaths),0)::int AS deaths,
+          COALESCE(SUM(FLOOR(COALESCE(pgs.cs,0)/10.0)),0)::int AS cs10,
+          COALESCE(SUM(CASE WHEN pgs.player_win THEN 1 ELSE 0 END),0)::int AS wins
+       FROM public.player_game_stats pgs
+       JOIN public.game g ON g.id = pgs.game_id
+       JOIN public.tournament t ON t.id = g.tournament_id
+       WHERE pgs.player_id = $1
+         AND g.datetime_utc >= $2 AND g.datetime_utc < $3
+         AND (COALESCE($4::text, '') = '' OR t.league = $4::text OR t.league ILIKE ($4::text) || '%' OR (t.league_icon_key IS NOT NULL AND t.league_icon_key ILIKE ($4::text) || '%'))`,
+      [playerId, period.starts_at, period.ends_at, code],
+    );
+    const a = agg[0] || { kills: 0, assists: 0, deaths: 0, cs10: 0, wins: 0 };
+    const breakdown = {
+      kills: { count: Number(a.kills), points: Number(a.kills) * killW },
+      assists: { count: Number(a.assists), points: Number(a.assists) * assistW },
+      deaths: { count: Number(a.deaths), points: Number(a.deaths) * deathW },
+      cs10: { count: Number(a.cs10), points: Number(a.cs10) * cs10W },
+      wins: { count: Number(a.wins), points: Number(a.wins) * winW },
+    };
+
+    return { games, breakdown, weights: { kill: killW, assist: assistW, death: deathW, cs10: cs10W, win: winW } };
+  }
 }

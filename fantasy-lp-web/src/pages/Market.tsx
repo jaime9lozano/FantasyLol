@@ -70,7 +70,16 @@ export default function MarketPage() {
         {(data?.orders ?? []).map((o: any) => (
           <div key={o.order_id} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'center', padding: 12, border: '1px solid #eee', borderRadius: 12, background: '#fff' }}>
             <div>
-              <div style={{ fontWeight: 700 }}>{o.player_name}</div>
+              <div style={{ fontWeight: 700 }}>
+                <span
+                  role="link"
+                  onClick={() => (window.history.pushState({}, '', `/player/${o.player_id}`), window.dispatchEvent(new PopStateEvent('popstate')))}
+                  style={{ cursor: 'pointer', color: 'inherit', textDecoration: 'none' }}
+                  title="Ver estadísticas"
+                >
+                  {o.player_name}
+                </span>
+              </div>
               <div style={{ fontSize: 12, color: '#666' }}>
                 Valor: {new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(Number(o.valuation || 0))}
                 {' · '}Pujas de usuarios: {o.bidders_count}

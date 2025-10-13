@@ -6,6 +6,7 @@ import LeagueSelectorPage from './pages/LeagueSelector';
 import HomePage from './pages/Home';
 import MarketPage from './pages/Market';
 import TeamPage from './pages/Team';
+import PlayerPage from './pages/Player';
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const { access } = useAuth();
@@ -24,6 +25,7 @@ export default function App() {
           <Route path="/home" element={<RequireAuth><HomePage /></RequireAuth>} />
           <Route path="/market" element={<RequireAuth><MarketPage /></RequireAuth>} />
           <Route path="/team" element={<RequireAuth><TeamPage /></RequireAuth>} />
+          <Route path="/player/:playerId" element={<RequireAuth><PlayerPage /></RequireAuth>} />
           <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
       </BrowserRouter>

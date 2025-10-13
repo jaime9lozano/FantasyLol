@@ -79,7 +79,16 @@ export default function TeamPage() {
               {s.starter ? <span style={{ fontSize: 10, color: '#0a7' }}>Titular</span> : <span style={{ fontSize: 10, color: '#777' }}>Banquillo</span>}
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600 }}>{s.player?.name}</div>
+              <div style={{ fontWeight: 600 }}>
+                <span
+                  role="link"
+                  onClick={() => (window.history.pushState({}, '', `/player/${s.player.id}`), window.dispatchEvent(new PopStateEvent('popstate')))}
+                  style={{ cursor: 'pointer', color: 'inherit', textDecoration: 'none' }}
+                  title="Ver estadísticas"
+                >
+                  {s.player?.name}
+                </span>
+              </div>
               <div style={{ fontSize: 12, color: '#666' }}>Rol: {s.player?.role || 'FLEX'}{s.lockedUntil ? ' · Bloqueado' : ''}</div>
             </div>
             <div style={{ fontWeight: 600 }}>{new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(Number(s.value || 0))}</div>
