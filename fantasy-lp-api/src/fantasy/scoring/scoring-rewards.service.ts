@@ -38,6 +38,14 @@ export class ScoringRewardsService {
 
       let rewarded = 0;
       for (const r of rows) {
+        // Idempotencia por equipo/periodo: si ya hay ledger REWARD_PERIOD para ese ref_id y team, saltar
+        const already: Array<{ ok: number }> = await qr.query(
+          `SELECT 1 AS ok FROM ${T('fantasy_budget_ledger')}
+           WHERE fantasy_league_id = $1 AND fantasy_team_id = $2 AND type = 'REWARD_PERIOD' AND ref_id = $3
+           LIMIT 1`,
+          [fantasyLeagueId, r.fantasy_team_id, periodId],
+        );
+        if (already.length) continue;
         const pts = Number(r.points);
         const variable = Math.min(pts * perPoint, perPointCap);
         const rank = rankingMap.get(r.fantasy_team_id) || 0;

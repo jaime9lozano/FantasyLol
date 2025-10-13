@@ -4,6 +4,8 @@ import { Cron } from '@nestjs/schedule';
 import { DataSource } from 'typeorm';
 import { MarketService } from '../market/market.service';
 import { ValuationService } from '../valuation/valuation.service';
+import { ScoringService } from '../scoring/scoring.service';
+import { ScoringRewardsService } from '../scoring/scoring-rewards.service';
 import { T } from '../../database/schema.util';
 
 @Injectable()
@@ -14,6 +16,8 @@ export class FantasySchedulerService {
     private readonly ds: DataSource,
     private readonly market: MarketService,
     private readonly valuation: ValuationService,
+    private readonly scoring: ScoringService,
+    private readonly rewards: ScoringRewardsService,
   ) {}
 
   /**
@@ -154,6 +158,87 @@ export class FantasySchedulerService {
       }
     } catch (e) {
       this.logger.error('Error en nightlyRevaluationPerLeague()', e as any);
+    }
+  }
+
+  /**
+   * 4) Recompute de periodos activos y recientes (cada 5 minutos)
+   *  - Recalcula team_points para el periodo en curso y el anterior por cada liga.
+   *  - No paga recompensas aquí; sólo puntos. Las recompensas se pagan en closeIfFinished.
+   */
+  @Cron('*/5 * * * *')
+  async recomputeActiveAndRecentPeriods() {
+    try {
+      const leagues: Array<{ id: number }> = await this.ds.query(
+        `SELECT id FROM ${T('fantasy_league')}`,
+      );
+      for (const lg of leagues) {
+        const periods: Array<{ id: number; starts_at: Date; ends_at: Date }>= await this.ds.query(
+          `SELECT id, starts_at, ends_at
+           FROM ${T('fantasy_scoring_period')}
+           WHERE fantasy_league_id = $1
+           ORDER BY starts_at ASC`,
+          [lg.id],
+        );
+        if (!periods.length) continue;
+        // Elegir último (actual) y penúltimo (reciente) por seguridad
+        const last = periods[periods.length - 1];
+        const prev = periods.length > 1 ? periods[periods.length - 2] : undefined;
+
+        // Si estamos dentro del último, recomputar
+        const now = new Date();
+        if (now >= new Date(last.starts_at)) {
+          await this.scoring.computeForPeriod(lg.id, last.id);
+        }
+        // Recalcular el anterior por si hubo datos tardíos
+        if (prev) {
+          await this.scoring.computeForPeriod(lg.id, prev.id);
+        }
+      }
+    } catch (e) {
+      this.logger.error('Error en recomputeActiveAndRecentPeriods()', e as any);
+    }
+  }
+
+  /**
+   * 5) Cierre de periodos finalizados con gracia (cada 10 minutos)
+   *  - Detecta periodos cuya ends_at + grace ha pasado y marca recompensas si no se pagaron.
+   */
+  @Cron('*/10 * * * *')
+  async closeFinishedPeriodsWithRewards() {
+    const graceMin = Number(process.env.FANTASY_PERIOD_GRACE_MIN ?? '15');
+    try {
+      const leagues: Array<{ id: number }> = await this.ds.query(
+        `SELECT id FROM ${T('fantasy_league')}`,
+      );
+      const now = new Date();
+      for (const lg of leagues) {
+        const rows: Array<{ id: number; ends_at: string }>= await this.ds.query(
+          `SELECT id, ends_at
+           FROM ${T('fantasy_scoring_period')}
+           WHERE fantasy_league_id = $1
+             AND ends_at <= (now() - ($2::text || ' minutes')::interval)
+           ORDER BY ends_at ASC`,
+          [lg.id, graceMin],
+        );
+        for (const p of rows) {
+          // Comprobar si ya hay asientos de reward de este periodo
+          const paid: Array<{ ok: number }> = await this.ds.query(
+            `SELECT 1 AS ok
+             FROM ${T('fantasy_budget_ledger')}
+             WHERE fantasy_league_id = $1 AND type = 'REWARD_PERIOD' AND ref_id = $2
+             LIMIT 1`,
+            [lg.id, p.id],
+          );
+          if (paid.length) continue;
+          // Asegurar recompute final y luego pagar
+          await this.scoring.computeForPeriod(lg.id, p.id);
+          await this.rewards.rewardPeriod(lg.id, p.id);
+          this.logger.log(`Periodo ${p.id} cerrado y recompensado en liga ${lg.id}`);
+        }
+      }
+    } catch (e) {
+      this.logger.error('Error en closeFinishedPeriodsWithRewards()', e as any);
     }
   }
 }

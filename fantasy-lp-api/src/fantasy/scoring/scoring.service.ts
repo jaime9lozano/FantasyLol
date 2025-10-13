@@ -193,13 +193,7 @@ export class ScoringService {
     );
   });
 
-  // Tras computar puntos, otorgar recompensas monetarias de jornada
-  try {
-    await this.rewards.rewardPeriod(fantasyLeagueId, periodId);
-  } catch (e) {
-    // No interrumpir compute por fallo en rewards
-    // Podrías loggear con logger real
-  }
+  // No otorgamos recompensas aquí; el scheduler de cierre se encarga de pagarlas de forma idempotente.
   return { ok: true };
 }
 
